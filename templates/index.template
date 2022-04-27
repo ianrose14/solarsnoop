@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+  </head>
+  <body>
+    <h3>Solar Snoop</h3>
+
+    <p>Keep an eye on your solar production and get notifications when your system's net generation is positive!</p>
+
+    {{ if and .Uid .Cid }}
+    <div style="align: right"><a>logout</a></div>
+    <table>
+      <tr>
+	<td>Uid:</td><td>{{ .Uid }}</td>
+      </tr>
+      <tr>
+	<td>Cid:</td><td>{{ .Cid }}</td>
+      </tr>
+    </table>
+    {{ else }}
+    <a>login</a>
+    {{ end }}
+  </body>
+</html>
