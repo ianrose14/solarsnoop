@@ -23,7 +23,7 @@ func TestResponseWriterPeeker(t *testing.T) {
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
 
-				assert.Equal(t, 0, w.GetStatus(), "wrong internal status")
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 				assert.Equal(t, 0, w.GetContentLength(), "wrong internal content length")
 
 				fmt.Fprintln(w, "chicken")
@@ -39,7 +39,7 @@ func TestResponseWriterPeeker(t *testing.T) {
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
 
-				assert.Equal(t, 0, w.GetStatus(), "wrong internal status")
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 				assert.Equal(t, 0, w.GetContentLength(), "wrong internal content length")
 
 				fmt.Fprintf(w, "chicken")
@@ -55,6 +55,8 @@ func TestResponseWriterPeeker(t *testing.T) {
 			name: "test not found",
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
+
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 				http.NotFound(w, r)
 
 				assert.Equal(t, http.StatusNotFound, w.GetStatus(), "wrong internal status")
@@ -67,6 +69,8 @@ func TestResponseWriterPeeker(t *testing.T) {
 			name: "test internal server error",
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
+
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 				http.Error(w, "sorry, it blew up", http.StatusInternalServerError)
 
 				assert.Equal(t, http.StatusInternalServerError, w.GetStatus(), "wrong internal status")
@@ -79,6 +83,8 @@ func TestResponseWriterPeeker(t *testing.T) {
 			name: "test double status explicit",
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
+
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 
 				w.WriteHeader(http.StatusAccepted)
 				fmt.Fprintf(w, "hi bob")
@@ -94,6 +100,8 @@ func TestResponseWriterPeeker(t *testing.T) {
 			name: "test double status implicit",
 			handler: func(rw http.ResponseWriter, r *http.Request) {
 				w := httpserver.NewResponseWriterPeeker(rw)
+
+				assert.Equal(t, http.StatusOK, w.GetStatus(), "wrong internal status")
 
 				fmt.Fprintf(w, "superman")
 				w.WriteHeader(http.StatusNotFound)

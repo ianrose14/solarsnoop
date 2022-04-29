@@ -3,23 +3,38 @@
   <head>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
   </head>
-  <body>
+  <body style="padding: 10px">
     <h3>Solar Snoop</h3>
 
     <p>Keep an eye on your solar production and get notifications when your system's net generation is positive!</p>
 
-    {{ if and .Uid .Cid }}
-    <div style="align: right"><a>logout</a></div>
-    <table>
+    {{ if .UserId }}
+    <table style="border-spacing: 10px; border-collapse: separate">
       <tr>
-	<td>Uid:</td><td>{{ .Uid }}</td>
+	<td>UserId:</td><td>{{ .UserId }}</td>
       </tr>
       <tr>
-	<td>Cid:</td><td>{{ .Cid }}</td>
+	<td>Systems:</td>
+	<td>
+	  
+	  {{ range .Systems }}
+	    <div>[ {{.SystemId}}: "{{.Name}}" ]</div>
+          {{ end }}
+	  
+        </td>
       </tr>
     </table>
+    <div style="padding-top: 30px">
+      <a class="btn btn-primary" href="/logout">logout</a>
+    </div>
     {{ else }}
-    <a>login</a>
+    <div style="padding-top: 30px">
+      <a class="btn btn-primary" href="https://api.enphaseenergy.com/oauth/authorize?response_type=code&client_id={{.OAuthClientId}}&redirect_uri={{.CallbackUrl}}">login</a>
+    </div>
     {{ end }}
+
+    <div style="padding-top: 20px">
+      <img src="/static/logo.png" height="20%" width="20%">
+    </div>
   </body>
 </html>

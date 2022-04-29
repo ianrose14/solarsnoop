@@ -23,6 +23,9 @@ type responsePeeker struct {
 }
 
 func (p *responsePeeker) GetStatus() int {
+	if p.status == 0 {
+		return http.StatusOK
+	}
 	return p.status
 }
 
