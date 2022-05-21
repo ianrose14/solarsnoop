@@ -68,6 +68,7 @@ func main() {
 	svr := &server{db: db}
 
 	http.HandleFunc("/", svr.rootHandler)
+	http.HandleFunc("/logout", svr.logoutHandler)
 	http.HandleFunc("/oauth/callback", svr.loginHandler)
 	http.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
 	http.Handle("/static/", http.FileServer(http.FS(staticContent)))
@@ -128,7 +129,6 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			fmt.Fprintf(w, "%d watts consumed from %s to %s\n", wattsConsumed, startAt, startAt.Add(15*time.Minute))
-
 		}
 	}
 
@@ -195,6 +195,19 @@ func (svr *server) loginHandler(rw http.ResponseWriter, r *http.Request) {
 	})
 
 	fmt.Fprintf(w, "done!!") // TODO
+}
+
+func (svr *server) logoutHandler(rw http.ResponseWriter, r *http.Request) {
+	w := httpserver.NewResponseWriterPeeker(rw)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:    SessionCookieName,
+		Value:   "",
+		Path:    "/",
+		Expires: time.Unix(0, 0),
+	})
+
+	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
 func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
