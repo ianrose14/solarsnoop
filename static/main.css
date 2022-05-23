@@ -1,0 +1,35 @@
+table.main {
+    border-spacing: 10px;
+    border-collapse: separate;
+}
+
+table.main th {
+    vertical-align: top;
+}
+
+.notifications {
+    white-space: nowrap;
+    margin-bottom: 15px;
+}
+
+.notifications form {
+    margin-top: 8px;
+    margin-left: 25px;
+}
+
+.notifications form.form-btn-only {
+    display: inline-block;
+    margin-left: 10px;
+}
+
+.notifications form.form-btn-only button {
+    padding: 0;
+    height: 100%;
+    border: 0;
+    box-shadow: none;
+}
+
+a.help {
+    padding-left: 10px;
+    padding-right: 10px;
+}

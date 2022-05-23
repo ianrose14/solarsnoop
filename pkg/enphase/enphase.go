@@ -44,7 +44,21 @@ type System struct {
 	OperationalAt  int64  `json:"operational_at"` // unix timestamp (seconds)
 }
 
-func CompleteAuthorization(ctx context.Context, authCode, redirectUrl, clientId, clientSecret string) (*OAuthTokenResponse, error) {
+type Client struct {
+	apiKey       string
+	clientId     string
+	clientSecret string
+}
+
+func NewClient(apiKey, clientId, clientSecret string) *Client {
+	return &Client{
+		apiKey:       apiKey,
+		clientId:     clientId,
+		clientSecret: clientSecret,
+	}
+}
+
+func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUrl string) (*OAuthTokenResponse, error) {
 	const urlstr = "https://api.enphaseenergy.com/oauth/token"
 
 	formData := url.Values{
@@ -60,17 +74,14 @@ func CompleteAuthorization(ctx context.Context, authCode, redirectUrl, clientId,
 	}
 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(string(clientId), string(clientSecret))
+	req.SetBasicAuth(c.clientId, c.clientSecret)
 
 	rsp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
-	defer func() {
-		ioutil.ReadAll(rsp.Body)
-		rsp.Body.Close()
-	}()
+	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
 		return nil, fmt.Errorf("POST failure: %s", rsp.Status)
@@ -84,7 +95,7 @@ func CompleteAuthorization(ctx context.Context, authCode, redirectUrl, clientId,
 	return &body, nil
 }
 
-func FetchConsumption(ctx context.Context, systemId int64, accessToken, apiKey string, startAt time.Time) (int64, error) {
+func (c *Client) FetchConsumption(ctx context.Context, systemId int64, accessToken string, startAt time.Time) (int64, error) {
 	qs := url.Values{
 		"start_at":    {strconv.FormatInt(startAt.Unix(), 10)},
 		"granularity": {"15mins"},
@@ -98,17 +109,14 @@ func FetchConsumption(ctx context.Context, systemId int64, accessToken, apiKey s
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("key", apiKey)
+	req.Header.Set("key", c.apiKey)
 
 	rsp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("GET failure: %w", err)
 	}
 
-	defer func() {
-		ioutil.ReadAll(rsp.Body)
-		rsp.Body.Close()
-	}()
+	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
 		body, _ := ioutil.ReadAll(io.LimitReader(rsp.Body, 512))
@@ -137,7 +145,7 @@ func FetchConsumption(ctx context.Context, systemId int64, accessToken, apiKey s
 	return watts, nil
 }
 
-func FetchProduction(ctx context.Context, systemId int64, accessToken, apiKey string, startAt time.Time) (int64, error) {
+func (c *Client) FetchProduction(ctx context.Context, systemId int64, accessToken string, startAt time.Time) (int64, error) {
 	qs := url.Values{
 		"start_at":    {strconv.FormatInt(startAt.Unix(), 10)},
 		"granularity": {"15mins"},
@@ -151,17 +159,14 @@ func FetchProduction(ctx context.Context, systemId int64, accessToken, apiKey st
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("key", apiKey)
+	req.Header.Set("key", c.apiKey)
 
 	rsp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("GET failure: %w", err)
 	}
 
-	defer func() {
-		ioutil.ReadAll(rsp.Body)
-		rsp.Body.Close()
-	}()
+	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
 		body, _ := ioutil.ReadAll(io.LimitReader(rsp.Body, 512))
@@ -181,17 +186,25 @@ func FetchProduction(ctx context.Context, systemId int64, accessToken, apiKey st
 		return 0, fmt.Errorf("failed to parse response body: %w", err)
 	}
 
-	var watts int64
 	for _, interval := range body.Intervals {
+		// sanity check the EndAtt field...
+		skew := time.Unix(interval.EndAt, 0).Sub(startAt.Add(15 * time.Minute))
+		if skew < 0 {
+			skew = -skew // absolute value
+		}
+		if skew > time.Minute {
+			return 0, fmt.Errorf("untrustworthy interval: [%d, %d]", body.StartAt, interval.EndAt)
+		}
+
 		// multiple by 4 because X Watt*hours over 15 minutes is 4*X watts
-		watts += interval.WhDel * 4
+		return interval.WhDel * 4, nil
 	}
 
-	return watts, nil
+	return 0, fmt.Errorf("no intervals  returned")
 }
 
 // TODO(ianrose): implement paging
-func FetchSystems(ctx context.Context, accessToken, apiKey string) ([]*System, error) {
+func (c *Client) FetchSystems(ctx context.Context, accessToken string) ([]*System, error) {
 	const urlstr = "https://api.enphaseenergy.com/api/v4/systems?size=100"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", urlstr, nil)
@@ -200,17 +213,14 @@ func FetchSystems(ctx context.Context, accessToken, apiKey string) ([]*System, e
 	}
 
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("key", apiKey)
+	req.Header.Set("key", c.apiKey)
 
 	rsp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET failure: %w", err)
 	}
 
-	defer func() {
-		ioutil.ReadAll(rsp.Body)
-		rsp.Body.Close()
-	}()
+	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
 		return nil, fmt.Errorf("GET failure: %s", rsp.Status)
@@ -225,4 +235,9 @@ func FetchSystems(ctx context.Context, accessToken, apiKey string) ([]*System, e
 	}
 
 	return body.Systems, nil
+}
+
+func drainAndClose(rc io.ReadCloser) {
+	_, _ = ioutil.ReadAll(rc)
+	_ = rc.Close()
 }

@@ -2,25 +2,84 @@
 <html lang="en">
   <head>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/3.4.1/css/bootstrap.min.css" integrity="sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu" crossorigin="anonymous">
+    <link rel="stylesheet" href="/static/main.css">
+
+    <script>
+      function updateRecipientPlaceholder(src) {
+          let kind = src.options[src.selectedIndex].value;
+          let target = document.getElementById('recipient');
+          switch (kind) {
+          case "Email":
+            target.placeholder = 'email address';
+            break;
+          case "SMS":
+            target.placeholder = 'phone number';
+            break;
+          case "Ecobee":
+            target.placeholder = 'TBD';
+            break;
+          }
+      }
+    </script>
   </head>
-  <body style="padding: 10px">
+  <body style="padding: 10px" class="container">
     <h3>Solar Snoop</h3>
 
     <p>Keep an eye on your solar production and get notifications when your system's net generation is positive!</p>
 
     {{ if .UserId }}
-    <table style="border-spacing: 10px; border-collapse: separate">
+    <table class="main">
       <tr>
-	<td>UserId:</td><td>{{ .UserId }}</td>
+	    <th>UserId:</th>
+	    <td>{{ .UserId }}</td>
       </tr>
       <tr>
-	<td>Systems:</td>
-	<td>
-	  
-	  {{ range .Systems }}
-	    <div>[ {{.SystemId}}: "{{.Name}}" ]</div>
+	    <th>Systems:</th>
+	    <td>
+	      {{ range .Systems }}
+	      <div>[ {{.SystemId}}: "{{.Name}}" ]</div>
           {{ end }}
-	  
+        </td>
+      </tr>
+      <tr>
+        <th>Notifications:</th>
+        <td>
+        <div class="notifications">
+          {{ if not .Notifiers }}
+            (none currently configured)
+          {{ else }}
+            <em>configured:</em>
+            <ul>
+              {{ range .Notifiers }}
+                <li>
+                  {{ .Kind }} {{ .Recipient }} &rarr; Site #{{ .SystemId }} ({{ .SystemName }})
+                  <form method="POST" action="/notifications/delete" class="form-inline form-btn-only">
+                    <input type="hidden" name="notifierId" value="{{.Id}}">
+                    <b><button type="submit" class="form-control" title="delete">Ｘ</button></b>
+                  </form>
+                </li>
+              {{ end }}
+            </ul>
+          {{ end }}
+        </div>
+        <div class="notifications">
+            <em>Add notification:</em> <a href="/static/help/notifications.html" target="_blank" class="help">help🚨</a>
+            <form method="POST" action="/notifications/add" class="form-inline">
+              <select name="systemId" class="form-control">
+                <option>(choose site)</option>
+                {{ range .Systems }}
+                <option value="{{.SystemId}}">{{.Name}}</option>
+                {{ end }}
+              </select>
+              <select name="kind" class="form-control" onchange="javascript:updateRecipientPlaceholder(this)">
+                <option>SMS</option>
+                <option>Email</option>
+                <option>Ecobee</option>
+              </select>
+              <input type="text" size="40" name="recipient" placeholder="phone number" class="form-control" id="recipient">
+              <input type="submit" value="save" class="form-control"></input>
+              </form>
+          </div>
         </td>
       </tr>
     </table>

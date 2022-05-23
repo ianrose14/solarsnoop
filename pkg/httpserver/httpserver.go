@@ -1,6 +1,8 @@
 package httpserver
 
-import "net/http"
+import (
+	"net/http"
+)
 
 type ResponseWriterPeeker interface {
 	http.ResponseWriter
