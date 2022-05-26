@@ -80,7 +80,6 @@ func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUr
 	if err != nil {
 		return nil, fmt.Errorf("POST failure: %w", err)
 	}
-
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
@@ -186,21 +185,23 @@ func (c *Client) FetchProduction(ctx context.Context, systemId int64, accessToke
 		return 0, fmt.Errorf("failed to parse response body: %w", err)
 	}
 
-	for _, interval := range body.Intervals {
-		// sanity check the EndAtt field...
-		skew := time.Unix(interval.EndAt, 0).Sub(startAt.Add(15 * time.Minute))
-		if skew < 0 {
-			skew = -skew // absolute value
-		}
-		if skew > time.Minute {
-			return 0, fmt.Errorf("untrustworthy interval: [%d, %d]", body.StartAt, interval.EndAt)
-		}
-
-		// multiple by 4 because X Watt*hours over 15 minutes is 4*X watts
-		return interval.WhDel * 4, nil
+	if len(body.Intervals) == 0 {
+		return 0, fmt.Errorf("no intervals  returned")
 	}
 
-	return 0, fmt.Errorf("no intervals  returned")
+	interval := body.Intervals[0]
+
+	// sanity check the EndAt field...
+	skew := time.Unix(interval.EndAt, 0).Sub(startAt.Add(15 * time.Minute))
+	if skew < 0 {
+		skew = -skew // absolute value
+	}
+	if skew > time.Minute {
+		return 0, fmt.Errorf("untrustworthy interval: [%d, %d]", body.StartAt, interval.EndAt)
+	}
+
+	// multiple by 4 because X Watt*hours over 15 minutes is 4*X watts
+	return interval.WhDel * 4, nil
 }
 
 // TODO(ianrose): implement paging
@@ -235,6 +236,37 @@ func (c *Client) FetchSystems(ctx context.Context, accessToken string) ([]*Syste
 	}
 
 	return body.Systems, nil
+}
+
+func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokenResponse, error) {
+	qs := make(url.Values)
+	qs.Set("grant_type", "refresh_token")
+	qs.Set("refresh_token", refreshToken)
+
+	urlstr := "https://api.enphaseenergy.com/oauth/token?" + qs.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", urlstr, strings.NewReader(""))
+	if err != nil {
+		return nil, fmt.Errorf("failed to make new http request: %w", err)
+	}
+	req.SetBasicAuth(c.clientId, c.clientSecret)
+
+	rsp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST failure: %w", err)
+	}
+	defer drainAndClose(rsp.Body)
+
+	if rsp.StatusCode >= 300 {
+		return nil, fmt.Errorf("POST failure: %s", rsp.Status)
+	}
+
+	var body OAuthTokenResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to parse response body: %w", err)
+	}
+
+	return &body, nil
 }
 
 func drainAndClose(rc io.ReadCloser) {

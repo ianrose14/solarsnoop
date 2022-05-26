@@ -87,6 +87,7 @@ func main() {
 	http.Handle("/static/", http.FileServer(http.FS(staticContent)))
 
 	// Admin handlers, remove or protect before real launch
+	http.HandleFunc("/refresh", svr.refreshHandler)
 	http.HandleFunc("/sessions", svr.sessionsHandler)
 	http.HandleFunc("/tick", svr.cronTicker)
 
@@ -180,7 +181,7 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 				}
 
 				if sendErr != nil {
-					log.Printf("failed to send notification for system %d of user %s: %s", system.SystemId, session.UserId, err)
+					log.Printf("failed to send notification for system %d of user %s: %s", system.SystemId, session.UserId, sendErr)
 					continue
 				}
 			}

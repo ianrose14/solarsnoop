@@ -55,6 +55,7 @@
                   {{ .Kind }} {{ .Recipient }} &rarr; Site #{{ .SystemId }} ({{ .SystemName }})
                   <form method="POST" action="/notifications/delete" class="form-inline form-btn-only">
                     <input type="hidden" name="notifierId" value="{{.Id}}">
+                    <input type="hidden" name="systemId" value="{{.SystemId}}">
                     <b><button type="submit" class="form-control" title="delete">Ｘ</button></b>
                   </form>
                 </li>

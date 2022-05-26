@@ -32,6 +32,22 @@ type NotifierConfig struct {
 	Recipient string
 }
 
+func DeleteNotifier(ctx context.Context, db *sql.DB, userId string, systemId, notifierId int64) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer conn.Close()
+
+	stmt := "DELETE FROM notifiers WHERE user_id=? AND system_id=? AND notifier_id=?"
+	_, err = conn.ExecContext(ctx, stmt, userId, systemId, notifierId)
+	if err != nil {
+		return fmt.Errorf("failed to delete from notifiers: %w", err)
+	}
+
+	return nil
+}
+
 func InsertMessageAttempt(ctx context.Context, db *sql.DB, notifierId int64, phase powertrend.Phase, sendErr error) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -76,30 +92,77 @@ func InsertNotifier(ctx context.Context, db *sql.DB, userId string, systemId int
 	return nil
 }
 
-func InsertSession(ctx context.Context, db *sql.DB, userId, accessToken, refreshToken string) (*AuthSession, error) {
+// UpsertSession creates a new or updates and existing auth session, returning the session's unique token.
+func UpsertSession(ctx context.Context, db *sql.DB, userId, accessToken, refreshToken string) (string, error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get database connection: %w", err)
+		return "", fmt.Errorf("failed to get database connection: %w", err)
 	}
 	defer conn.Close()
 
-	session := AuthSession{
-		UserId:       userId,
-		SessionToken: fmt.Sprintf("%x", chaos.Int63()),
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		CreatedTime:  time.Now(),
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	if err != nil {
+		return "", fmt.Errorf("failed to start transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	stmt := "SELECT session_token FROM auth_sessions WHERE user_id=?"
+	rows, err := tx.QueryContext(ctx, stmt, userId)
+	if err != nil {
+		return "", fmt.Errorf("failed to query auth_sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessionToken string
+	if rows.Next() {
+		err := rows.Scan(&sessionToken)
+		if err != nil {
+			return "", fmt.Errorf("failed to scan row contents: %w", err)
+		}
 	}
 
-	stmt := "INSERT INTO auth_sessions(user_id, session_token, access_token, refresh_token, created_time, last_refresh_time)" +
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("failed to iterate query results: %w", err)
+	}
+
+	if sessionToken != "" {
+		// found an existing row - we should update it
+		stmt := "UPDATE auth_sessions SET access_token=?, refresh_token=?, last_refresh_time=? WHERE user_id=?"
+		_, err := tx.ExecContext(ctx, stmt, accessToken, refreshToken, time.Now(), userId)
+		if err != nil {
+			return "", fmt.Errorf("failed to update auth_sessions: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("failed to commit db tx: %w", err)
+		}
+
+		committed = true
+		return sessionToken, nil
+	}
+
+	// else, no existing row - we should create one
+
+	sessionToken = fmt.Sprintf("%x", chaos.Int63())
+	stmt = "INSERT INTO auth_sessions(user_id, session_token, access_token, refresh_token, created_time, last_refresh_time)" +
 		" VALUES(?,?,?,?,?,?);"
 
-	_, err = conn.ExecContext(ctx, stmt, session.UserId, session.SessionToken, session.AccessToken, session.RefreshToken, session.CreatedTime, 0)
+	_, err = tx.ExecContext(ctx, stmt, userId, sessionToken, accessToken, refreshToken, time.Now(), 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to insert into auth_sessions: %w", err)
+		return "", fmt.Errorf("failed to insert into auth_sessions: %w", err)
 	}
 
-	return &session, nil
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("failed to commit db tx: %w", err)
+	}
+
+	committed = true
+	return sessionToken, nil
 }
 
 func InsertSystems(ctx context.Context, db *sql.DB, userId string, systems []*enphase.System) error {
@@ -264,7 +327,7 @@ func UpsertDatabaseTables(ctx context.Context, db *sql.DB) error {
 
 	sqlSchema := map[string]string{
 		"auth_sessions": "CREATE TABLE IF NOT EXISTS auth_sessions (" +
-			"user_id TEXT NOT NULL," +
+			"user_id TEXT NOT NULL PRIMARY KEY," +
 			"session_token TEXT NOT NULL," +
 			"access_token TEXT NOT NULL," +
 			"refresh_token TEXT NOT NULL," +

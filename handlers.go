@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,15 +44,15 @@ func (svr *server) loginHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := internal.InsertSession(ctx, svr.db, authRsp.UserId, authRsp.AccessToken, authRsp.RefreshToken)
+	sessionToken, err := internal.UpsertSession(ctx, svr.db, authRsp.UserId, authRsp.AccessToken, authRsp.RefreshToken)
 	if err != nil {
 		httpError(w, "", err, http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("created session %q for user %q", session.SessionToken, session.UserId)
+	log.Printf("created session %q for user %q", sessionToken, authRsp.UserId)
 
-	err = internal.InsertSystems(ctx, svr.db, session.UserId, systems)
+	err = internal.InsertSystems(ctx, svr.db, authRsp.UserId, systems)
 	if err != nil {
 		httpError(w, "", err, http.StatusInternalServerError)
 		return
@@ -62,7 +63,7 @@ func (svr *server) loginHandler(rw http.ResponseWriter, r *http.Request) {
 	// TODO - secure=true, samesite=???
 	http.SetCookie(w, &http.Cookie{
 		Name:    SessionCookieName,
-		Value:   SessionCookiePrefix + session.SessionToken,
+		Value:   SessionCookiePrefix + sessionToken,
 		Path:    "/",
 		Expires: time.Now().Add(365 * 24 * time.Hour),
 	})
@@ -104,15 +105,10 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var systemId int64
-	if v := r.Form.Get("systemId"); v == "" {
-		httpError(w, "'systemId' is required", nil, http.StatusBadRequest)
+	systemId, err := readInt64Param(r.Form, "systemId")
+	if err != nil {
+		httpError(w, err.Error(), nil, http.StatusBadRequest) // this errMsg is always safe to echo to client
 		return
-	} else if i, err := strconv.ParseInt(v, 10, 64); err != nil {
-		httpError(w, "invalid 'systemId' parameter", nil, http.StatusBadRequest)
-		return
-	} else {
-		systemId = i
 	}
 
 	kind := notifications.Kind(strings.ToLower(r.Form.Get("kind")))
@@ -130,6 +126,8 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
 		return
 	}
+
+	// TODO(ianrose): validate recipient based on kind
 
 	found := false
 	for _, system := range systems {
@@ -158,7 +156,7 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 	start := time.Now()
 	defer requestLog(w, r, start)
 
-	session, systems, err := getCurrentSession(ctx, r, svr.db)
+	session, _, err := getCurrentSession(ctx, r, svr.db)
 	if err != nil {
 		log.Printf("failed to lookup current session: %s", err)
 	}
@@ -167,10 +165,70 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	_ = systems
+	if err := r.ParseForm(); err != nil {
+		httpError(w, "", err, http.StatusBadRequest)
+		return
+	}
 
-	// TODO
-	return
+	notifierId, err := readInt64Param(r.Form, "notifierId")
+	if err != nil {
+		httpError(w, err.Error(), nil, http.StatusBadRequest) // this errMsg is always safe to echo to client
+		return
+	}
+
+	systemId, err := readInt64Param(r.Form, "systemId")
+	if err != nil {
+		httpError(w, err.Error(), nil, http.StatusBadRequest) // this errMsg is always safe to echo to client
+		return
+	}
+
+	if err := internal.DeleteNotifier(ctx, svr.db, session.UserId, systemId, notifierId); err != nil {
+		httpError(w, fmt.Sprintf("failed to delete notifier %d", notifierId), err, http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+}
+
+func (svr *server) refreshHandler(rw http.ResponseWriter, r *http.Request) {
+	w := httpserver.NewResponseWriterPeeker(rw)
+	ctx := r.Context()
+
+	start := time.Now()
+	defer requestLog(w, r, start)
+
+	if !strings.HasPrefix(r.Host, "localhost") {
+		http.Error(w, "admin handler not authorized", http.StatusUnauthorized)
+		return
+	}
+
+	conn, err := svr.db.Conn(ctx)
+	if err != nil {
+		httpError(w, "", fmt.Errorf("failed to get database connection: %w", err), http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+
+	sessions, err := internal.QuerySessions(ctx, svr.db, "" /* all */)
+	if err != nil {
+		httpError(w, "", fmt.Errorf("failed to query sessions: %w", err), http.StatusInternalServerError)
+		return
+	}
+
+	for _, session := range sessions {
+		rsp, err := svr.enphaseClient.RefreshTokens(ctx, session.RefreshToken)
+		if err != nil {
+			log.Printf("failed to refresh tokens for session for user %s: %s", session.UserId, err)
+			continue
+		}
+
+		if _, err := internal.UpsertSession(ctx, svr.db, session.UserId, rsp.AccessToken, rsp.RefreshToken); err != nil {
+			log.Printf("failed to upsert session for user %s: %s", session.UserId, err)
+			continue
+		}
+	}
+
+	fmt.Fprintf(w, "ok!")
 }
 
 func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
@@ -318,4 +376,14 @@ func requestLog(w httpserver.ResponseWriterPeeker, r *http.Request, start time.T
 	log.Printf("%s [%s] \"%s %s %s\" %d %d %dms",
 		r.RemoteAddr, start.Format(time.RFC3339), r.Method, r.RequestURI,
 		r.Proto, w.GetStatus(), w.GetContentLength(), time.Since(start).Milliseconds())
+}
+
+func readInt64Param(vals url.Values, key string) (int64, error) {
+	if v := vals.Get(key); v == "" {
+		return 0, fmt.Errorf("%q parameter is required", key)
+	} else if i, err := strconv.ParseInt(v, 10, 64); err != nil {
+		return 0, fmt.Errorf("invalid %q paramter", key)
+	} else {
+		return i, nil
+	}
 }
