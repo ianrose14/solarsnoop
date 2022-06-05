@@ -7,17 +7,19 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/ianrose14/solarsnoop/internal"
 	"github.com/ianrose14/solarsnoop/internal/notifications"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 )
 
-func (svr *server) loginHandler(rw http.ResponseWriter, r *http.Request) {
+func (svr *server) enphaseLoginHandler(rw http.ResponseWriter, r *http.Request) {
 	w := httpserver.NewResponseWriterPeeker(rw)
 	ctx := r.Context()
 
@@ -30,7 +32,7 @@ func (svr *server) loginHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authRsp, err := svr.enphaseClient.CompleteAuthorization(ctx, authCode, fmt.Sprintf("//%s/oauth/callback", r.Host))
+	authRsp, err := svr.enphaseClient.CompleteAuthorization(ctx, authCode, svr.enphaseCallbackUrl(r))
 	if err != nil {
 		httpError(w, err.Error(), nil, http.StatusInternalServerError)
 		return
@@ -141,6 +143,19 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if kind == notifications.Ecobee {
+		// initiate oauth flow
+		qs := make(url.Values)
+		qs.Set("response_type", "code")
+		//qs.Set("client_id", Xxx)
+		qs.Set("redirect_uri", fmt.Sprintf("%s://%s/ecobee/oauth/callback", r.URL.Scheme, svr.Host(r)))
+		qs.Set("scope", "smartWrite")
+		qs.Set("state", "")
+
+		http.Redirect(w, r, "https://api.ecobee.com/authorize?"+qs.Encode(), http.StatusTemporaryRedirect)
+		return
+	}
+
 	if err := internal.InsertNotifier(ctx, svr.db, session.UserId, systemId, kind, recipient); err != nil {
 		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
 		return
@@ -190,6 +205,24 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
+func (svr *server) ecobeeLoginHandler(rw http.ResponseWriter, r *http.Request) {
+	w := httpserver.NewResponseWriterPeeker(rw)
+	ctx := r.Context()
+
+	start := time.Now()
+	defer requestLog(w, r, start)
+	_ = ctx
+}
+
+func (svr *server) ecobeeTestHandler(rw http.ResponseWriter, r *http.Request) {
+	w := httpserver.NewResponseWriterPeeker(rw)
+	ctx := r.Context()
+
+	start := time.Now()
+	defer requestLog(w, r, start)
+	_ = ctx
+}
+
 func (svr *server) refreshHandler(rw http.ResponseWriter, r *http.Request) {
 	w := httpserver.NewResponseWriterPeeker(rw)
 	ctx := r.Context()
@@ -197,7 +230,7 @@ func (svr *server) refreshHandler(rw http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer requestLog(w, r, start)
 
-	if !strings.HasPrefix(r.Host, "localhost") {
+	if !strings.HasPrefix(svr.Host(r), "localhost") {
 		http.Error(w, "admin handler not authorized", http.StatusUnauthorized)
 		return
 	}
@@ -238,6 +271,13 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer requestLog(w, r, start)
 
+	// We ONLY want to match on the exact / path.  Don't be a fallback!
+	if r.URL.Path != "/" {
+		log.Printf("not founding [%s]", r.URL.Path)
+		http.NotFound(w, r)
+		return
+	}
+
 	type NotifierConfig struct {
 		internal.NotifierConfig
 		SystemId   int64
@@ -252,8 +292,10 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 		CallbackUrl   string
 	}{
 		OAuthClientId: enphaseClientId,
-		CallbackUrl:   fmt.Sprintf("//%s/oauth/callback", r.Host),
+		CallbackUrl:   svr.enphaseCallbackUrl(r),
 	}
+
+	log.Printf("CallbackUrl = %s", args.CallbackUrl)
 
 	session, systems, err := getCurrentSession(ctx, r, svr.db)
 	if err != nil {
@@ -294,7 +336,7 @@ func (svr *server) sessionsHandler(rw http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer requestLog(w, r, start)
 
-	if !strings.HasPrefix(r.Host, "localhost") {
+	if !strings.HasPrefix(svr.Host(r), "localhost") || runtime.GOOS == "darwin" {
 		http.Error(w, "admin handler not authorized", http.StatusUnauthorized)
 		return
 	}
@@ -317,6 +359,14 @@ func (svr *server) sessionsHandler(rw http.ResponseWriter, r *http.Request) {
 	for _, session := range sessions {
 		fmt.Fprintf(w, "%+v\n", session)
 	}
+}
+
+func (svr *server) enphaseCallbackUrl(r *http.Request) string {
+	scheme := "https"
+	if !metadata.OnGCE() && r.URL.Scheme != "" {
+		scheme = r.URL.Scheme
+	}
+	return fmt.Sprintf("%s://%s/enphase/oauth/callback", scheme, svr.Host(r))
 }
 
 func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*internal.AuthSession, []*enphase.System, error) {

@@ -83,7 +83,11 @@ func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUr
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		return nil, fmt.Errorf("POST failure: %s", rsp.Status)
+		body, err := ioutil.ReadAll(rsp.Body)
+		if err != nil {
+			body = []byte(fmt.Sprintf("failed to read body (%s)", err))
+		}
+		return nil, fmt.Errorf("POST failure (%s): %s", rsp.Status, truncateString(string(body), 500))
 	}
 
 	var body OAuthTokenResponse
@@ -258,7 +262,11 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		return nil, fmt.Errorf("POST failure: %s", rsp.Status)
+		body, err := ioutil.ReadAll(rsp.Body)
+		if err != nil {
+			body = []byte(fmt.Sprintf("failed to read body (%s)", err))
+		}
+		return nil, fmt.Errorf("POST failure (%s): %s", rsp.Status, truncateString(string(body), 500))
 	}
 
 	var body OAuthTokenResponse
@@ -272,4 +280,11 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 func drainAndClose(rc io.ReadCloser) {
 	_, _ = ioutil.ReadAll(rc)
 	_ = rc.Close()
+}
+
+func truncateString(s string, maxlen int) string {
+	if len(s) <= maxlen {
+		return s
+	}
+	return s[:maxlen]
 }

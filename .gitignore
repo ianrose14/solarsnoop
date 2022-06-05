@@ -15,5 +15,8 @@
 # vendor/
 
 # Custom stuff from here down:
-data
+bin
 *.sqlite
+.idea
+secrets.yaml
+var

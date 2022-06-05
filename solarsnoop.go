@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/ianrose14/solarsnoop/internal"
@@ -18,6 +19,7 @@ import (
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/acme/autocert"
 )
 
 // TODO: refresh tokens periodically
@@ -50,8 +52,9 @@ var (
 )
 
 func main() {
+	certsDir := flag.String("certs", "certs", "directory to store letsencrypt certs")
 	dbfile := flag.String("db", "solarsnoop.sqlite", "sqlite database file")
-	port := flag.Int("port", 8080, "port to listen on")
+	host := flag.String("host", "", "optional hostname for webserver")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -70,35 +73,94 @@ func main() {
 		log.Fatalf("failed to upsert database tables: %s", err)
 	}
 
-	log.Printf("listening on port :%d", *port)
-
 	svr := &server{
 		db:            db,
 		enphaseClient: enphase.NewClient(enphaseApiKey, enphaseClientId, enphaseClientSecret),
 		notifier:      notifications.NewSender(sendgridApiKey),
+		host:          *host,
 	}
 
-	http.HandleFunc("/", svr.rootHandler)
-	http.HandleFunc("/logout", svr.logoutHandler)
-	http.HandleFunc("/oauth/callback", svr.loginHandler)
-	http.HandleFunc("/notifications/add", svr.addNotificationHandler)
-	http.HandleFunc("/notifications/delete", svr.deleteNotificationHandler)
-	http.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
-	http.Handle("/static/", http.FileServer(http.FS(staticContent)))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", svr.rootHandler)
+	mux.HandleFunc("/logout", svr.logoutHandler)
+	mux.HandleFunc("/ecobee/oauth/callback", svr.ecobeeLoginHandler)
+	mux.HandleFunc("/enphase/oauth/callback", svr.enphaseLoginHandler)
+	mux.HandleFunc("/notifications/add", svr.addNotificationHandler)
+	mux.HandleFunc("/notifications/delete", svr.deleteNotificationHandler)
+	mux.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
+	mux.Handle("/static/", http.FileServer(http.FS(staticContent)))
 
 	// Admin handlers, remove or protect before real launch
-	http.HandleFunc("/refresh", svr.refreshHandler)
-	http.HandleFunc("/sessions", svr.sessionsHandler)
-	http.HandleFunc("/tick", svr.cronTicker)
+	mux.HandleFunc("/refresh", svr.refreshHandler)
+	mux.HandleFunc("/sessions", svr.sessionsHandler)
+	mux.HandleFunc("/tick", svr.cronTicker)
+	mux.HandleFunc("/ecobee", svr.ecobeeTestHandler)
 
-	err = http.ListenAndServe(fmt.Sprintf(":%d", *port), nil)
-	log.Fatalf("ListenAndServe: %v", err)
+	var httpHandler http.Handler = mux
+
+	// TODO: in a handler wrapper, redirect http to https (in production only)
+
+	// NOSUBMIT
+	const inProduction = true
+
+	// when testing locally it doesn't make sense to start
+	// HTTPS server, so only do it in production.
+	// In real code, I control this with -production cmd-line flag
+	if inProduction {
+		if err := os.MkdirAll(*certsDir, 0777); err != nil {
+			log.Fatalf("failed to create certs dir: %s", err)
+		}
+
+		httpsSrv := makeHTTPServer(mux)
+		certManager := &autocert.Manager{
+			Prompt: autocert.AcceptTOS,
+			Email:  "ianrose14+autocert@gmail.com", // NOSUBMIT - replace with alias?
+			HostPolicy: func(ctx context.Context, host string) error {
+				log.Printf("autocert query for host %q", host)
+				return autocert.HostWhitelist("solarsnoop.com", "www.solarsnoop.com")(ctx, host)
+			},
+			Cache: autocert.DirCache(*certsDir),
+		}
+		httpsSrv.Addr = ":https"
+		httpsSrv.TLSConfig = certManager.TLSConfig()
+
+		httpHandler = certManager.HTTPHandler(mux)
+
+		go func() {
+			log.Printf("listening on port 443")
+
+			//err := http.ListenAndServeTLS(":https", "", "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			//	log.Printf("request for %s with Host=%s and Proto=%s", r.URL, r.Host, r.Proto)
+			//	httpsSrv.Handler.ServeHTTP(w, r)
+			//}))
+			err := httpsSrv.ListenAndServeTLS("", "")
+			if err != nil {
+				log.Fatalf("httpsSrv.ListendAndServeTLS() failed: %s", err)
+			}
+		}()
+	}
+
+	log.Printf("listening on port 80")
+	if err := http.ListenAndServe(":http", httpHandler); err != nil {
+		log.Fatalf("http.ListenAndServe failed: %s", err)
+	}
+}
+
+func makeHTTPServer(mux *http.ServeMux) *http.Server {
+	// set timeouts so that a slow or malicious client can't hold resources forever
+	return &http.Server{
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		IdleTimeout:  120 * time.Second,
+		Handler:      mux,
+	}
 }
 
 type server struct {
 	db            *sql.DB
 	enphaseClient *enphase.Client
 	notifier      *notifications.Sender
+	host          string
 }
 
 func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
@@ -197,4 +259,11 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 		        - send notification
 		        - record last notification time
 	*/
+}
+
+func (svr *server) Host(r *http.Request) string {
+	if svr.host != "" {
+		return svr.host
+	}
+	return r.Host
 }
