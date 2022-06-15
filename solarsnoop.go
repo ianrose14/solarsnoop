@@ -30,18 +30,6 @@ const (
 )
 
 var (
-	//go:embed data/enphase-apikey.txt
-	enphaseApiKey string
-
-	//go:embed data/enphase-clientid.txt
-	enphaseClientId string
-
-	//go:embed data/enphase-clientsecret.txt
-	enphaseClientSecret string
-
-	//go:embed data/sendgrid-apikey.txt
-	sendgridApiKey string
-
 	//go:embed templates/index.template
 	rootContent string
 
@@ -51,13 +39,23 @@ var (
 	rootTemplate = template.Must(template.New("root").Parse(rootContent))
 )
 
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Llongfile)
+}
+
 func main() {
 	certsDir := flag.String("certs", "certs", "directory to store letsencrypt certs")
 	dbfile := flag.String("db", "solarsnoop.sqlite", "sqlite database file")
 	host := flag.String("host", "", "optional hostname for webserver")
+	secretsFile := flag.String("secrets", "config/secrets.yaml", "Path to local secrets file")
 	flag.Parse()
 
 	ctx := context.Background()
+
+	secrets, err := internal.ParseSecrets(*secretsFile)
+	if err != nil {
+		log.Fatalf("failed to parse secrets: %s", err)
+	}
 
 	db, err := sql.Open("sqlite3", "file:"+*dbfile+"?cache=shared")
 	if err != nil {
@@ -75,8 +73,9 @@ func main() {
 
 	svr := &server{
 		db:            db,
-		enphaseClient: enphase.NewClient(enphaseApiKey, enphaseClientId, enphaseClientSecret),
-		notifier:      notifications.NewSender(sendgridApiKey),
+		enphaseClient: enphase.NewClient(secrets.Enphase.ApiKey, secrets.Enphase.ClientID, secrets.Enphase.ClientSecret),
+		secrets:       secrets,
+		notifier:      notifications.NewSender(secrets.SendGrid.ApiKey),
 		host:          *host,
 	}
 
@@ -159,6 +158,7 @@ func makeHTTPServer(mux *http.ServeMux) *http.Server {
 type server struct {
 	db            *sql.DB
 	enphaseClient *enphase.Client
+	secrets       *internal.SecretsFile
 	notifier      *notifications.Sender
 	host          string
 }

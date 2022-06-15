@@ -9,6 +9,8 @@ bin/solarsnoop:
 deploy: docker-build
 	docker save -o /tmp/solarsnoop.image solarsnoop:latest
 	rsync -avh /tmp/solarsnoop.image ianrose14@34.66.56.67:
+	ssh ianrose14@34.66.56.67 mkdir -p config/
+	scp config/secrets.yaml ianrose14@34.66.56.67:config/
 	scp scripts/startup.sh ianrose14@34.66.56.67:
 	ssh ianrose14@34.66.56.67 bash ./startup.sh
 

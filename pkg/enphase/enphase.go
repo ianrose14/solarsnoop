@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -139,8 +140,10 @@ func (c *Client) FetchConsumption(ctx context.Context, systemId int64, accessTok
 		return 0, fmt.Errorf("failed to parse response body: %w", err)
 	}
 
+	// TODO(ianrose): should we only be taking 1 interval?  (based on EndAt?)
 	var watts int64
 	for _, interval := range body.Intervals {
+		log.Printf("interval: %+v", interval) // NOSUBMIT
 		// multiple by 4 because X Watt*hours over 15 minutes is 4*X watts
 		watts += interval.EnWh * 4
 	}
@@ -209,9 +212,8 @@ func (c *Client) FetchProduction(ctx context.Context, systemId int64, accessToke
 }
 
 // TODO(ianrose): implement paging
-func (c *Client) FetchSystems(ctx context.Context, accessToken string) ([]*System, error) {
-	const urlstr = "https://api.enphaseenergy.com/api/v4/systems?size=100"
-
+func (c *Client) FetchSystems(ctx context.Context, accessToken string, page int) ([]*System, error) {
+	urlstr := fmt.Sprintf("https://api.enphaseenergy.com/api/v4/systems?size=100&page=%d", page)
 	req, err := http.NewRequestWithContext(ctx, "GET", urlstr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make new http request: %w", err)

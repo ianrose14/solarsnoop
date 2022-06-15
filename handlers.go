@@ -40,7 +40,7 @@ func (svr *server) enphaseLoginHandler(rw http.ResponseWriter, r *http.Request) 
 
 	log.Printf("successful authorization for user %q", authRsp.UserId)
 
-	systems, err := svr.enphaseClient.FetchSystems(ctx, authRsp.AccessToken)
+	systems, err := svr.enphaseClient.FetchSystems(ctx, authRsp.AccessToken, 1)
 	if err != nil {
 		httpError(w, err.Error(), nil, http.StatusInternalServerError)
 		return
@@ -291,7 +291,7 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 		OAuthClientId string
 		CallbackUrl   string
 	}{
-		OAuthClientId: enphaseClientId,
+		OAuthClientId: svr.secrets.Enphase.ClientID,
 		CallbackUrl:   svr.enphaseCallbackUrl(r),
 	}
 
