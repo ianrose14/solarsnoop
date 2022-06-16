@@ -8,6 +8,9 @@ import (
 )
 
 type SecretsFile struct {
+	Ecobee struct {
+		ApiKey string `yaml:"apikey"`
+	}
 	Enphase struct {
 		ApiKey       string `yaml:"apikey"`
 		ClientID     string `yaml:"clientId"`

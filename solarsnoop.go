@@ -16,6 +16,7 @@ import (
 	"github.com/ianrose14/solarsnoop/internal"
 	"github.com/ianrose14/solarsnoop/internal/notifications"
 	"github.com/ianrose14/solarsnoop/internal/powertrend"
+	"github.com/ianrose14/solarsnoop/pkg/ecobee"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 	_ "github.com/mattn/go-sqlite3"
@@ -73,6 +74,7 @@ func main() {
 
 	svr := &server{
 		db:            db,
+		ecobeeClient:  ecobee.NewClient(),
 		enphaseClient: enphase.NewClient(secrets.Enphase.ApiKey, secrets.Enphase.ClientID, secrets.Enphase.ClientSecret),
 		secrets:       secrets,
 		notifier:      notifications.NewSender(secrets.SendGrid.ApiKey),
@@ -88,6 +90,8 @@ func main() {
 	mux.HandleFunc("/notifications/delete", svr.deleteNotificationHandler)
 	mux.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
 	mux.Handle("/static/", http.FileServer(http.FS(staticContent)))
+
+	// TODO: 1 minute ticker to refresh all enphase and ecobee tokens that are < 15min from expiration?
 
 	// Admin handlers, remove or protect before real launch
 	mux.HandleFunc("/refresh", svr.refreshHandler)
@@ -157,6 +161,7 @@ func makeHTTPServer(mux *http.ServeMux) *http.Server {
 
 type server struct {
 	db            *sql.DB
+	ecobeeClient  *ecobee.Client
 	enphaseClient *enphase.Client
 	secrets       *internal.SecretsFile
 	notifier      *notifications.Sender

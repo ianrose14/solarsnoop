@@ -84,11 +84,8 @@ func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUr
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		body, err := ioutil.ReadAll(rsp.Body)
-		if err != nil {
-			body = []byte(fmt.Sprintf("failed to read body (%s)", err))
-		}
-		return nil, fmt.Errorf("POST failure (%s): %s", rsp.Status, truncateString(string(body), 500))
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body OAuthTokenResponse
@@ -123,8 +120,8 @@ func (c *Client) FetchConsumption(ctx context.Context, systemId int64, accessTok
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		body, _ := ioutil.ReadAll(io.LimitReader(rsp.Body, 512))
-		return 0, fmt.Errorf("GET failure: (%s) %s", rsp.Status, string(body))
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body struct {
@@ -175,8 +172,8 @@ func (c *Client) FetchProduction(ctx context.Context, systemId int64, accessToke
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		body, _ := ioutil.ReadAll(io.LimitReader(rsp.Body, 512))
-		return 0, fmt.Errorf("GET failure: (%s) %s", rsp.Status, string(body))
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body struct {
@@ -230,7 +227,8 @@ func (c *Client) FetchSystems(ctx context.Context, accessToken string, page int)
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		return nil, fmt.Errorf("GET failure: %s", rsp.Status)
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body struct {
@@ -264,11 +262,8 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
-		body, err := ioutil.ReadAll(rsp.Body)
-		if err != nil {
-			body = []byte(fmt.Sprintf("failed to read body (%s)", err))
-		}
-		return nil, fmt.Errorf("POST failure (%s): %s", rsp.Status, truncateString(string(body), 500))
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body OAuthTokenResponse
@@ -282,6 +277,14 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 func drainAndClose(rc io.ReadCloser) {
 	_, _ = ioutil.ReadAll(rc)
 	_ = rc.Close()
+}
+
+func httpResponseError(rsp *http.Response) error {
+	body, err := ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		body = []byte(fmt.Sprintf("failed to read body (%s)", err))
+	}
+	return fmt.Errorf("POST failure (%s): %s", rsp.Status, truncateString(string(body), 500))
 }
 
 func truncateString(s string, maxlen int) string {

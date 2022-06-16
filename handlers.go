@@ -147,8 +147,8 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		// initiate oauth flow
 		qs := make(url.Values)
 		qs.Set("response_type", "code")
-		//qs.Set("client_id", Xxx)
-		qs.Set("redirect_uri", fmt.Sprintf("%s://%s/ecobee/oauth/callback", r.URL.Scheme, svr.Host(r)))
+		qs.Set("client_id", svr.secrets.Ecobee.ApiKey)
+		qs.Set("redirect_uri", fmt.Sprintf("https://%s/ecobee/oauth/callback", svr.Host(r)))
 		qs.Set("scope", "smartWrite")
 		qs.Set("state", "")
 
