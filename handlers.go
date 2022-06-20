@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -124,35 +125,35 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 	}
 
 	recipient := r.Form.Get("recipient")
-	if recipient == "" {
-		httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
-		return
-	}
 
 	// TODO(ianrose): validate recipient based on kind
 
-	found := false
-	for _, system := range systems {
-		if systemId == system.SystemId {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !hasSystemId(systems, systemId) {
 		httpError(w, "invalid 'systemId' parameter", nil, http.StatusBadRequest)
 		return
 	}
 
 	if kind == notifications.Ecobee {
+		if recipient != "" {
+			// assume this is a refresh token
+			panic("TODO")
+		}
+
 		// initiate oauth flow
 		qs := make(url.Values)
 		qs.Set("response_type", "code")
 		qs.Set("client_id", svr.secrets.Ecobee.ApiKey)
-		qs.Set("redirect_uri", fmt.Sprintf("https://%s/ecobee/oauth/callback", svr.Host(r)))
+		qs.Set("redirect_uri", svr.ecobeeCallbackUrl(r))
 		qs.Set("scope", "smartWrite")
-		qs.Set("state", "")
+		qs.Set("state", "systemId:"+strconv.FormatInt(systemId, 10))
 
 		http.Redirect(w, r, "https://api.ecobee.com/authorize?"+qs.Encode(), http.StatusTemporaryRedirect)
+		return
+	}
+
+	// for all non-Ecobee kinds, recipient is required
+	if recipient == "" {
+		httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
 		return
 	}
 
@@ -211,7 +212,61 @@ func (svr *server) ecobeeLoginHandler(rw http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	defer requestLog(w, r, start)
-	_ = ctx
+
+	authCode := r.URL.Query().Get("code")
+	if authCode == "" {
+		http.Error(w, "no code present in querystring", http.StatusBadRequest)
+		return
+	}
+
+	const prefix = "systemId:"
+	state := r.URL.Query().Get("state")
+	if !strings.HasPrefix(state, prefix) {
+		http.Error(w, "invalid 'state' param in querystring", http.StatusBadRequest)
+		return
+	}
+
+	systemId, err := strconv.ParseInt(strings.TrimPrefix(state, prefix), 10, 64)
+	if err != nil {
+		httpError(w, "invalid 'state' param in querystring", err, http.StatusBadRequest)
+		return
+	}
+
+	session, systems, err := getCurrentSession(ctx, r, svr.db)
+	if err != nil {
+		log.Printf("failed to lookup current session: %s", err)
+	}
+	if session == nil {
+		httpError(w, "not logged in", nil, http.StatusUnauthorized)
+		return
+	}
+
+	if !hasSystemId(systems, systemId) {
+		httpError(w, "invalid 'systemId' from state parameter", nil, http.StatusBadRequest)
+		return
+	}
+
+	authRsp, err := svr.ecobeeClient.CompleteAuthorization(ctx, authCode, svr.ecobeeCallbackUrl(r), svr.secrets.Ecobee.ApiKey)
+	if err != nil {
+		httpError(w, err.Error(), nil, http.StatusInternalServerError)
+		return
+	}
+
+	jsonStr, err := json.Marshal(authRsp)
+	if err != nil {
+		httpError(w, "failed to json-marshal auth response", err, http.StatusInternalServerError)
+		return
+	}
+
+	if err := internal.InsertNotifier(ctx, svr.db, session.UserId, systemId, notifications.Ecobee, string(jsonStr)); err != nil {
+		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
+		return
+	}
+
+	svr.ecobeeClient.SendMessage(ctx, authRsp.AccessToken,
+		fmt.Sprintf("Thermostat successfully connected to Enphase system %d 🌤", systemId))
+
+	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
 func (svr *server) ecobeeTestHandler(rw http.ResponseWriter, r *http.Request) {
@@ -361,6 +416,11 @@ func (svr *server) sessionsHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (svr *server) ecobeeCallbackUrl(r *http.Request) string {
+	// NB: ecobee oauth flow only works over https
+	return fmt.Sprintf("https://%s/ecobee/oauth/callback", svr.Host(r))
+}
+
 func (svr *server) enphaseCallbackUrl(r *http.Request) string {
 	scheme := "https"
 	if !metadata.OnGCE() && r.URL.Scheme != "" {
@@ -401,6 +461,15 @@ func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*inter
 	}
 
 	return sessions[0], systems, nil
+}
+
+func hasSystemId(systems []*enphase.System, systemId int64) bool {
+	for _, system := range systems {
+		if system.SystemId == systemId {
+			return true
+		}
+	}
+	return false
 }
 
 func httpError(w http.ResponseWriter, msg string, err error, code int) {

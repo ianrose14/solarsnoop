@@ -18,7 +18,17 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUrl, appKey string) (accessToken string, refreshToken string, e error) {
+type OAuthTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+	Scope        string `json:"scope"`
+}
+
+// TODO(ianrose): check for vacation (or hold?) events - maybe we can differentiate manual vs programmatic hold events by always setting the end time to some specific # of seconds
+
+func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUrl, appKey string) (*OAuthTokenResponse, error) {
 	const urlstr = "https://api.ecobee.com/token"
 
 	qs := url.Values{
@@ -31,52 +41,52 @@ func (c *Client) CompleteAuthorization(ctx context.Context, authCode, redirectUr
 
 	req, err := http.NewRequestWithContext(ctx, "POST", urlstr+"?"+qs.Encode(), nil)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to make new http request: %w", err)
+		return nil, fmt.Errorf("failed to make new http request: %w", err)
 	}
 
 	rsp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("POST failure: %w", err)
+		return nil, fmt.Errorf("POST failure: %w", err)
 	}
 	defer drainAndClose(rsp.Body)
 
 	if rsp.StatusCode >= 300 {
 		err := httpResponseError(rsp)
-		return "", "", fmt.Errorf("POST failure: %w", err)
+		return nil, fmt.Errorf("POST failure: %w", err)
+	}
+
+	var body OAuthTokenResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to parse response body: %w", err)
+	}
+
+	return &body, nil
+}
+
+func (c *Client) postFunction(_ context.Context, accessToken string, funcType string, params map[string]any) error {
+	const urlstr = "https://api.ecobee.com/1/thermostat?format=json"
+
+	type thermoFunc struct {
+		Type   string         `json:"type"`
+		Params map[string]any `json:"params"`
 	}
 
 	var body struct {
-		AccessToken  string `json:"access_token"`
-		TokenType    string `json:"token_type"`
-		ExpiresIn    int    `json:"expires_in"`
-		RefreshToken string `json:"refresh_token"`
-		Scope        string `json:"scope"`
-	}
-	if err := json.NewDecoder(rsp.Body).Decode(&body); err != nil {
-		return "", "", fmt.Errorf("failed to parse response body: %w", err)
+		Selection struct {
+			SelectionType string `json:"selectionType"`
+		} `json:"selection"`
+		Functions []thermoFunc `json:"functions"`
 	}
 
-	return body.AccessToken, body.RefreshToken, nil
-}
-
-func (c *Client) SetHold(ctx context.Context, accessToken string, coldHoldTemp, heatHoldTemp, holdHours int) error {
-	const urlstr = "https://api.ecobee.com/1/thermostat?format=json"
-
-	type ecobeeFunction struct {
-		Type string
-		Params map[string]string
-
+	body.Selection.SelectionType = "registered"
+	body.Functions = []thermoFunc{
+		{Type: funcType, Params: params},
 	}
 
-	body := struct {
-		Function []struct
-		Selection "selectionType":"registered",
-			"selectionMatch":""
-		},
-	}
-
-	body := x
 	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(&body); err != nil {
+		return fmt.Errorf("failed to json-encode body: %w", err)
+	}
 
 	req, err := http.NewRequest("POST", urlstr, &buf)
 	if err != nil {
@@ -95,7 +105,51 @@ func (c *Client) SetHold(ctx context.Context, accessToken string, coldHoldTemp, 
 		err := httpResponseError(rsp)
 		return fmt.Errorf("POST failure: %w", err)
 	}
+
+	return nil
 }
+
+func (c *Client) SendMessage(ctx context.Context, accessToken, text string) error {
+	return c.postFunction(ctx, accessToken, "sendMessage", map[string]any{"text": text})
+}
+
+//func (c *Client) SetHold(ctx context.Context, accessToken string, coldHoldTemp, heatHoldTemp, holdHours int) error {
+//	const urlstr = "https://api.ecobee.com/1/thermostat?format=json"
+//
+//	type ecobeeFunction struct {
+//		Type string
+//		Params map[string]string
+//
+//	}
+//
+//	body := struct {
+//		Function []struct
+//		Selection "selectionType":"registered",
+//			"selectionMatch":""
+//		},
+//	}
+//
+//	body := x
+//	var buf bytes.Buffer
+//
+//	req, err := http.NewRequest("POST", urlstr, &buf)
+//	if err != nil {
+//		return fmt.Errorf("failed to create http request: %w", err)
+//	}
+//	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+//	req.Header.Set("Authorization", "Bearer "+accessToken)
+//
+//	rsp, err := http.DefaultClient.Do(req)
+//	if err != nil {
+//		return fmt.Errorf("POST failure: %w", err)
+//	}
+//	defer drainAndClose(rsp.Body)
+//
+//	if rsp.StatusCode >= 300 {
+//		err := httpResponseError(rsp)
+//		return fmt.Errorf("POST failure: %w", err)
+//	}
+//}
 
 func drainAndClose(rc io.ReadCloser) {
 	_, _ = ioutil.ReadAll(rc)

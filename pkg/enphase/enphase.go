@@ -121,7 +121,7 @@ func (c *Client) FetchConsumption(ctx context.Context, systemId int64, accessTok
 
 	if rsp.StatusCode >= 300 {
 		err := httpResponseError(rsp)
-		return nil, fmt.Errorf("POST failure: %w", err)
+		return 0, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body struct {
@@ -173,7 +173,7 @@ func (c *Client) FetchProduction(ctx context.Context, systemId int64, accessToke
 
 	if rsp.StatusCode >= 300 {
 		err := httpResponseError(rsp)
-		return nil, fmt.Errorf("POST failure: %w", err)
+		return 0, fmt.Errorf("POST failure: %w", err)
 	}
 
 	var body struct {
