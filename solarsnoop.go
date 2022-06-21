@@ -5,21 +5,26 @@ import (
 	"database/sql"
 	"embed"
 	_ "embed"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
 	"os"
+	"reflect"
+	"runtime"
 	"time"
 
 	"github.com/ianrose14/solarsnoop/internal"
 	"github.com/ianrose14/solarsnoop/internal/notifications"
 	"github.com/ianrose14/solarsnoop/internal/powertrend"
+	"github.com/ianrose14/solarsnoop/internal/storage"
 	"github.com/ianrose14/solarsnoop/pkg/ecobee"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/robfig/cron/v3"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -68,13 +73,13 @@ func main() {
 		}
 	}()
 
-	if err := internal.UpsertDatabaseTables(ctx, db); err != nil {
+	if err := storage.UpsertDatabaseTables(ctx, db); err != nil {
 		log.Fatalf("failed to upsert database tables: %s", err)
 	}
 
 	svr := &server{
 		db:            db,
-		ecobeeClient:  ecobee.NewClient(),
+		ecobeeClient:  ecobee.NewClient(secrets.Ecobee.ApiKey),
 		enphaseClient: enphase.NewClient(secrets.Enphase.ApiKey, secrets.Enphase.ClientID, secrets.Enphase.ClientSecret),
 		secrets:       secrets,
 		notifier:      notifications.NewSender(secrets.SendGrid.ApiKey),
@@ -92,6 +97,26 @@ func main() {
 	mux.Handle("/static/", http.FileServer(http.FS(staticContent)))
 
 	// TODO: 1 minute ticker to refresh all enphase and ecobee tokens that are < 15min from expiration?
+	wrap := func(f func(context.Context) error) func() {
+		return func() {
+			if err := f(ctx); err != nil {
+				log.Printf("error in %s: %s", getFunctionName(f), err)
+			}
+		}
+	}
+	c := cron.New()
+	if _, err := c.AddFunc("0 */15 * * * *", wrap(svr.refreshEnphaseTokens)); err != nil {
+		log.Fatalf("bad cronspec: %s", err)
+	}
+	if _, err := c.AddFunc("0 */15 * * * *", wrap(svr.refreshEcobeeTokens)); err != nil {
+		log.Fatalf("bad cronspec: %s", err)
+	}
+	if _, err := c.AddFunc("0 */5 * * * *", wrap(svr.checkForUpdates)); err != nil {
+		log.Fatalf("bad cronspec: %s", err)
+	}
+	c.Start()
+
+	defer c.Stop()
 
 	// Admin handlers, remove or protect before real launch
 	mux.HandleFunc("/refresh", svr.refreshHandler)
@@ -168,6 +193,173 @@ type server struct {
 	host          string
 }
 
+func (svr *server) refreshEcobeeTokens(ctx context.Context) error {
+	conn, err := svr.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer conn.Close()
+
+	notifiers, err := storage.QueryAllNotifiers(ctx, svr.db)
+	if err != nil {
+		return fmt.Errorf("failed to query for notifiers: %w", err)
+	}
+
+	var updated int
+	for _, notifier := range notifiers {
+		if notifier.Kind != notifications.Ecobee {
+			continue
+		}
+
+		var authRsp ecobee.OAuthTokenResponse
+		if err := json.Unmarshal([]byte(notifier.Recipient), &authRsp); err != nil {
+			log.Printf("failed to json-unmarshal Recipient into auth response for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, authRsp.RefreshToken)
+		if err != nil {
+			log.Printf("failed to refresh token for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		jsonStr, err := json.Marshal(newRsp)
+		if err != nil {
+			log.Printf("failed to json-marshal auth response for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		if err := storage.UpdateNotifier(ctx, svr.db, notifier.Id, string(jsonStr)); err != nil {
+			log.Printf("failed to update db for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		updated++
+	}
+
+	log.Printf("refreshEcobeeTokens complete: refreshed %d tokens", updated)
+
+	return nil
+}
+
+func (svr *server) refreshEnphaseTokens(ctx context.Context) error {
+	conn, err := svr.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer conn.Close()
+
+	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
+	if err != nil {
+		return fmt.Errorf("failed to query sessions: %w", err)
+	}
+
+	for _, session := range sessions {
+		rsp, err := svr.enphaseClient.RefreshTokens(ctx, session.RefreshToken)
+		if err != nil {
+			log.Printf("failed to refresh tokens for session for user %s: %s", session.UserId, err)
+			continue
+		}
+
+		if _, err := storage.UpsertSession(ctx, svr.db, session.UserId, rsp.AccessToken, rsp.RefreshToken); err != nil {
+			log.Printf("failed to upsert session for user %s: %s", session.UserId, err)
+			continue
+		}
+	}
+
+	return nil
+}
+
+func (svr *server) checkForUpdates(ctx context.Context) error {
+	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
+	if err != nil {
+		return fmt.Errorf("failed to query sessions: %w", err)
+	}
+
+	for _, session := range sessions {
+		log.Printf("processing session %s of user %s", session.SessionToken, session.UserId)
+
+		systems, err := storage.QuerySystems(ctx, svr.db, session.UserId)
+		if err != nil {
+			log.Printf("failed to query systems for user %s", session.UserId)
+			continue
+		}
+
+		log.Printf("found %d systems for user %s", len(systems), session.UserId)
+		for _, system := range systems {
+			// We want to start at the beginning of the last FULL 15 minute interval,
+			// but also it can (anecdotally) take up to 5 minutes for data to appear.
+			// So our start should be so somewhere between 20 and 35 minutes ago.
+			startAt := time.Now().Add(-5 * time.Minute).Truncate(15 * time.Minute).Add(-15 * time.Minute)
+			endAt := startAt.Add(15 * time.Minute)
+
+			wattsProduced, err := svr.enphaseClient.FetchProduction(ctx, system.SystemId, session.AccessToken, startAt)
+			if err != nil {
+				log.Printf("failed to query production for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+			log.Printf("%d watts produced from %s to %s", wattsProduced, startAt, endAt)
+
+			wattsConsumed, err := svr.enphaseClient.FetchConsumption(ctx, system.SystemId, session.AccessToken, startAt)
+			if err != nil {
+				log.Printf("failed to query consumption for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+			log.Printf("%d watts consumed from %s to %s", wattsConsumed, startAt, endAt)
+
+			err = storage.InsertUsageData(ctx, svr.db, session.UserId, system.SystemId, startAt, endAt, wattsProduced, wattsConsumed)
+			if err != nil {
+				log.Printf("failed to save telemetry for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+
+			phase, err := powertrend.CheckForStateTransitions()
+			if err != nil {
+				log.Printf("failed to check for state transitions for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+
+			if phase == powertrend.NoChange {
+				log.Printf("no state transition for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+
+			notifs, err := storage.QuerySystemNotifiers(ctx, svr.db, session.UserId, system.SystemId)
+			if err != nil {
+				log.Printf("failed to query configured notifications for system %d of user %s: %s", system.SystemId, session.UserId, err)
+				continue
+			}
+
+			log.Printf("found %d configured notifications for system %d of user %s", len(notifs), system.SystemId, session.UserId)
+
+			for _, notif := range notifs {
+				sendErr := svr.notifier.Send(ctx, notif.Kind, notif.Recipient, phase)
+
+				// always record the notification attempt, regardless of success/failure
+				if err := storage.InsertMessageAttempt(ctx, svr.db, notif.Id, phase, sendErr); err != nil {
+					log.Printf("failed to write notification attempt to database: %s", err)
+				}
+
+				if sendErr != nil {
+					log.Printf("failed to send notification for system %d of user %s: %s", system.SystemId, session.UserId, sendErr)
+					continue
+				}
+			}
+		}
+	}
+
+	/*
+			poll:
+		  - for all (active?) accounts
+		    - store current net production
+		    - if net production over past X minutes is [TBD] AND
+		      - if last notification time is not too recent then
+		        - send notification
+		        - record last notification time
+	*/
+	return nil
+}
+
 func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 	w := httpserver.NewResponseWriterPeeker(rw)
 	ctx := r.Context()
@@ -175,7 +367,7 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer requestLog(w, r, start)
 
-	sessions, err := internal.QuerySessions(ctx, svr.db, "" /* all */)
+	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
 	if err != nil {
 		httpError(w, err.Error(), nil, http.StatusInternalServerError)
 		return
@@ -186,7 +378,7 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 	for _, session := range sessions {
 		fmt.Fprintf(w, "processing session %s of user %s\n", session.SessionToken, session.UserId)
 
-		systems, err := internal.QuerySystems(ctx, svr.db, session.UserId)
+		systems, err := storage.QuerySystems(ctx, svr.db, session.UserId)
 		if err != nil {
 			log.Printf("failed to query systems for user %s", session.UserId)
 			continue
@@ -214,7 +406,7 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 			}
 			fmt.Fprintf(w, "%d watts consumed from %s to %s\n", wattsConsumed, startAt, endAt)
 
-			err = internal.InsertUsageData(ctx, svr.db, session.UserId, system.SystemId, startAt, endAt, wattsProduced, wattsConsumed)
+			err = storage.InsertUsageData(ctx, svr.db, session.UserId, system.SystemId, startAt, endAt, wattsProduced, wattsConsumed)
 			if err != nil {
 				log.Printf("failed to save telemetry for system %d of user %s: %s", system.SystemId, session.UserId, err)
 				continue
@@ -231,7 +423,7 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			notifs, err := internal.QueryNotifiers(ctx, svr.db, session.UserId, system.SystemId)
+			notifs, err := storage.QuerySystemNotifiers(ctx, svr.db, session.UserId, system.SystemId)
 			if err != nil {
 				log.Printf("failed to query configured notifications for system %d of user %s: %s", system.SystemId, session.UserId, err)
 				continue
@@ -240,10 +432,10 @@ func (svr *server) cronTicker(rw http.ResponseWriter, r *http.Request) {
 			log.Printf("found %d configured notifications for system %d of user %s", len(notifs), system.SystemId, session.UserId)
 
 			for _, notif := range notifs {
-				sendErr := svr.notifier.Send(ctx, notifications.Kind(notif.Kind), notif.Recipient, phase)
+				sendErr := svr.notifier.Send(ctx, notif.Kind, notif.Recipient, phase)
 
 				// always record the notification attempt, regardless of success/failure
-				if err := internal.InsertMessageAttempt(ctx, svr.db, notif.Id, phase, sendErr); err != nil {
+				if err := storage.InsertMessageAttempt(ctx, svr.db, notif.Id, phase, sendErr); err != nil {
 					log.Printf("failed to write notification attempt to database: %s", err)
 				}
 
@@ -271,4 +463,8 @@ func (svr *server) Host(r *http.Request) string {
 		return svr.host
 	}
 	return r.Host
+}
+
+func getFunctionName(i interface{}) string {
+	return runtime.FuncForPC(reflect.ValueOf(i).Pointer()).Name()
 }

@@ -249,7 +249,7 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 
 	urlstr := "https://api.enphaseenergy.com/oauth/token?" + qs.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", urlstr, strings.NewReader(""))
+	req, err := http.NewRequestWithContext(ctx, "POST", urlstr, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make new http request: %w", err)
 	}

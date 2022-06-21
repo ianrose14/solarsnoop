@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
-	"github.com/ianrose14/solarsnoop/internal"
 	"github.com/ianrose14/solarsnoop/internal/notifications"
+	"github.com/ianrose14/solarsnoop/internal/storage"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 )
@@ -47,7 +47,7 @@ func (svr *server) enphaseLoginHandler(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sessionToken, err := internal.UpsertSession(ctx, svr.db, authRsp.UserId, authRsp.AccessToken, authRsp.RefreshToken)
+	sessionToken, err := storage.UpsertSession(ctx, svr.db, authRsp.UserId, authRsp.AccessToken, authRsp.RefreshToken)
 	if err != nil {
 		httpError(w, "", err, http.StatusInternalServerError)
 		return
@@ -55,7 +55,7 @@ func (svr *server) enphaseLoginHandler(rw http.ResponseWriter, r *http.Request) 
 
 	log.Printf("created session %q for user %q", sessionToken, authRsp.UserId)
 
-	err = internal.InsertSystems(ctx, svr.db, authRsp.UserId, systems)
+	err = storage.InsertSystems(ctx, svr.db, authRsp.UserId, systems)
 	if err != nil {
 		httpError(w, "", err, http.StatusInternalServerError)
 		return
@@ -157,7 +157,7 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := internal.InsertNotifier(ctx, svr.db, session.UserId, systemId, kind, recipient); err != nil {
+	if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, kind, recipient); err != nil {
 		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
 		return
 	}
@@ -198,7 +198,7 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := internal.DeleteNotifier(ctx, svr.db, session.UserId, systemId, notifierId); err != nil {
+	if err := storage.DeleteNotifier(ctx, svr.db, session.UserId, systemId, notifierId); err != nil {
 		httpError(w, fmt.Sprintf("failed to delete notifier %d", notifierId), err, http.StatusInternalServerError)
 		return
 	}
@@ -246,7 +246,7 @@ func (svr *server) ecobeeLoginHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authRsp, err := svr.ecobeeClient.CompleteAuthorization(ctx, authCode, svr.ecobeeCallbackUrl(r), svr.secrets.Ecobee.ApiKey)
+	authRsp, err := svr.ecobeeClient.CompleteAuthorization(ctx, authCode, svr.ecobeeCallbackUrl(r))
 	if err != nil {
 		httpError(w, err.Error(), nil, http.StatusInternalServerError)
 		return
@@ -258,13 +258,16 @@ func (svr *server) ecobeeLoginHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := internal.InsertNotifier(ctx, svr.db, session.UserId, systemId, notifications.Ecobee, string(jsonStr)); err != nil {
+	if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, notifications.Ecobee, string(jsonStr)); err != nil {
 		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
 		return
 	}
 
-	svr.ecobeeClient.SendMessage(ctx, authRsp.AccessToken,
-		fmt.Sprintf("Thermostat successfully connected to Enphase system %d 🌤", systemId))
+	message := fmt.Sprintf("Thermostat successfully connected to Enphase system %d 🌤", systemId)
+	if err := svr.ecobeeClient.SendMessage(ctx, authRsp.AccessToken, message); err != nil {
+		httpError(w, "failed to send message to ecobee device", err, http.StatusInternalServerError)
+		return
+	}
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
@@ -297,7 +300,7 @@ func (svr *server) refreshHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sessions, err := internal.QuerySessions(ctx, svr.db, "" /* all */)
+	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
 	if err != nil {
 		httpError(w, "", fmt.Errorf("failed to query sessions: %w", err), http.StatusInternalServerError)
 		return
@@ -310,7 +313,7 @@ func (svr *server) refreshHandler(rw http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if _, err := internal.UpsertSession(ctx, svr.db, session.UserId, rsp.AccessToken, rsp.RefreshToken); err != nil {
+		if _, err := storage.UpsertSession(ctx, svr.db, session.UserId, rsp.AccessToken, rsp.RefreshToken); err != nil {
 			log.Printf("failed to upsert session for user %s: %s", session.UserId, err)
 			continue
 		}
@@ -334,7 +337,7 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	type NotifierConfig struct {
-		internal.NotifierConfig
+		storage.NotifierConfig
 		SystemId   int64
 		SystemName string
 	}
@@ -363,7 +366,7 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, system := range systems {
-		configs, err := internal.QueryNotifiers(ctx, svr.db, session.UserId, system.SystemId)
+		configs, err := storage.QuerySystemNotifiers(ctx, svr.db, session.UserId, system.SystemId)
 		if err != nil {
 			httpError(w, fmt.Sprintf("failed to query configured notifications for system %d", system.SystemId), err, http.StatusInternalServerError)
 			return
@@ -403,7 +406,7 @@ func (svr *server) sessionsHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	sessions, err := internal.QuerySessions(ctx, svr.db, "" /* all */)
+	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
 	if err != nil {
 		httpError(w, "", fmt.Errorf("failed to query sessions: %w", err), http.StatusInternalServerError)
 		return
@@ -429,7 +432,7 @@ func (svr *server) enphaseCallbackUrl(r *http.Request) string {
 	return fmt.Sprintf("%s://%s/enphase/oauth/callback", scheme, svr.Host(r))
 }
 
-func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*internal.AuthSession, []*enphase.System, error) {
+func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*storage.AuthSession, []*enphase.System, error) {
 	c, err := r.Cookie(SessionCookieName)
 	if err != nil {
 		if err != http.ErrNoCookie {
@@ -445,7 +448,7 @@ func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*inter
 
 	sessionToken := strings.TrimPrefix(c.Value, SessionCookiePrefix)
 
-	sessions, err := internal.QuerySessions(ctx, db, sessionToken)
+	sessions, err := storage.QuerySessions(ctx, db, sessionToken)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query sessions: %w", err)
 	}
@@ -455,7 +458,7 @@ func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*inter
 		return nil, nil, nil
 	}
 
-	systems, err := internal.QuerySystems(ctx, db, sessions[0].UserId)
+	systems, err := storage.QuerySystems(ctx, db, sessions[0].UserId)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query systems: %w", err)
 	}

@@ -2,7 +2,9 @@
 
 build: bin/solarsnoop
 
-bin/solarsnoop:
+GOFILES:=$(shell find . -name '*.go' -not -path './var/*')
+
+bin/solarsnoop: $(GOFILES)
 	@mkdir -p bin/
 	go build -o bin/solarsnoop solarsnoop.go handlers.go
 
