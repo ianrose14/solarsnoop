@@ -353,8 +353,6 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 		CallbackUrl:   svr.enphaseCallbackUrl(r),
 	}
 
-	log.Printf("CallbackUrl = %s", args.CallbackUrl)
-
 	session, systems, err := getCurrentSession(ctx, r, svr.db)
 	if err != nil {
 		log.Printf("failed to lookup current session: %s", err)

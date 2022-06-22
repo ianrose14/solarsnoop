@@ -105,13 +105,13 @@ func main() {
 		}
 	}
 	c := cron.New()
-	if _, err := c.AddFunc("0 */15 * * * *", wrap(svr.refreshEnphaseTokens)); err != nil {
+	if _, err := c.AddFunc("*/15 * * * *", wrap(svr.refreshEnphaseTokens)); err != nil {
 		log.Fatalf("bad cronspec: %s", err)
 	}
-	if _, err := c.AddFunc("0 */15 * * * *", wrap(svr.refreshEcobeeTokens)); err != nil {
+	if _, err := c.AddFunc("*/15 * * * *", wrap(svr.refreshEcobeeTokens)); err != nil {
 		log.Fatalf("bad cronspec: %s", err)
 	}
-	if _, err := c.AddFunc("0 */5 * * * *", wrap(svr.checkForUpdates)); err != nil {
+	if _, err := c.AddFunc("*/5 * * * *", wrap(svr.checkForUpdates)); err != nil {
 		log.Fatalf("bad cronspec: %s", err)
 	}
 	c.Start()
@@ -238,7 +238,6 @@ func (svr *server) refreshEcobeeTokens(ctx context.Context) error {
 	}
 
 	log.Printf("refreshEcobeeTokens complete: refreshed %d tokens", updated)
-
 	return nil
 }
 
@@ -254,6 +253,7 @@ func (svr *server) refreshEnphaseTokens(ctx context.Context) error {
 		return fmt.Errorf("failed to query sessions: %w", err)
 	}
 
+	var updated int
 	for _, session := range sessions {
 		rsp, err := svr.enphaseClient.RefreshTokens(ctx, session.RefreshToken)
 		if err != nil {
@@ -265,8 +265,11 @@ func (svr *server) refreshEnphaseTokens(ctx context.Context) error {
 			log.Printf("failed to upsert session for user %s: %s", session.UserId, err)
 			continue
 		}
+
+		updated++
 	}
 
+	log.Printf("refreshEcobeeTokens complete: refreshed %d tokens", updated)
 	return nil
 }
 

@@ -4,6 +4,7 @@ set -e
 
 podman load -i solarsnoop.image
 (podman stop solarsnoop) || true
+(podman rm solarsnoop) || true
 
 mkdir -p data
 

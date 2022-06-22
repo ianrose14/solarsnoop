@@ -52,7 +52,8 @@
             <ul>
               {{ range .Notifiers }}
                 <li>
-                  {{ .Kind }} {{ .Recipient }} &rarr; Site #{{ .SystemId }} ({{ .SystemName }})
+                  {{ .Kind }} {{ if eq .Kind "ecobee" }} 🔌 {{ else }} ({{ .Recipient }}) {{ end }}
+                    &rarr; Site #{{ .SystemId }} ({{ .SystemName }})
                   <form method="POST" action="/notifications/delete" class="form-inline form-btn-only">
                     <input type="hidden" name="notifierId" value="{{.Id}}">
                     <input type="hidden" name="systemId" value="{{.SystemId}}">
