@@ -120,7 +120,7 @@ func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuth
 		"ecobee_type":   {"jwt"},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", urlstr+qs.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", urlstr+"?"+qs.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make new http request: %w", err)
 	}

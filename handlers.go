@@ -16,6 +16,7 @@ import (
 	"cloud.google.com/go/compute/metadata"
 	"github.com/ianrose14/solarsnoop/internal/notifications"
 	"github.com/ianrose14/solarsnoop/internal/storage"
+	"github.com/ianrose14/solarsnoop/pkg/ecobee"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
 	"github.com/ianrose14/solarsnoop/pkg/httpserver"
 )
@@ -134,21 +135,44 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 	}
 
 	if kind == notifications.Ecobee {
-		if recipient != "" {
-			// assume this is a refresh token
-			panic("TODO")
+		if recipient == "" {
+			// initiate oauth flow
+			qs := make(url.Values)
+			qs.Set("response_type", "code")
+			qs.Set("client_id", svr.secrets.Ecobee.ApiKey)
+			qs.Set("redirect_uri", svr.ecobeeCallbackUrl(r))
+			qs.Set("scope", "smartWrite")
+			qs.Set("state", "systemId:"+strconv.FormatInt(systemId, 10))
+
+			http.Redirect(w, r, "https://api.ecobee.com/authorize?"+qs.Encode(), http.StatusTemporaryRedirect)
+			return
 		}
 
-		// initiate oauth flow
-		qs := make(url.Values)
-		qs.Set("response_type", "code")
-		qs.Set("client_id", svr.secrets.Ecobee.ApiKey)
-		qs.Set("redirect_uri", svr.ecobeeCallbackUrl(r))
-		qs.Set("scope", "smartWrite")
-		qs.Set("state", "systemId:"+strconv.FormatInt(systemId, 10))
+		var authRsp ecobee.OAuthTokenResponse
+		if err := json.Unmarshal([]byte(recipient), &authRsp); err != nil {
+			httpError(w, "failed to json-unmarshal Recipient as OAuthTokenResponse", err, http.StatusInternalServerError)
+			return
+		}
 
-		http.Redirect(w, r, "https://api.ecobee.com/authorize?"+qs.Encode(), http.StatusTemporaryRedirect)
-		return
+		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, authRsp.RefreshToken)
+		if err != nil {
+			httpError(w, "failed to refresh ecobee tokens", err, http.StatusInternalServerError)
+			return
+		}
+
+		jsonStr, err := json.Marshal(newRsp)
+		if err != nil {
+			httpError(w, "failed to json-marshal auth response", err, http.StatusInternalServerError)
+			return
+		}
+		recipient = string(jsonStr)
+
+		defer func() {
+			err := svr.ecobeeClient.SendMessage(ctx, newRsp.AccessToken, "Hello Henry. \nYou smell like a goose.")
+			if err != nil {
+				log.Printf("failed to send ecobee message: %s", err)
+			}
+		}()
 	}
 
 	// for all non-Ecobee kinds, recipient is required

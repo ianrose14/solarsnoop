@@ -219,7 +219,7 @@ func (svr *server) refreshEcobeeTokens(ctx context.Context) error {
 
 		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, authRsp.RefreshToken)
 		if err != nil {
-			log.Printf("failed to refresh token for notifier %d: %s", notifier.Id, err)
+			log.Printf("failed to refresh ecobee tokens for notifier %d: %s", notifier.Id, err)
 			continue
 		}
 
@@ -257,7 +257,7 @@ func (svr *server) refreshEnphaseTokens(ctx context.Context) error {
 	for _, session := range sessions {
 		rsp, err := svr.enphaseClient.RefreshTokens(ctx, session.RefreshToken)
 		if err != nil {
-			log.Printf("failed to refresh tokens for session for user %s: %s", session.UserId, err)
+			log.Printf("failed to refresh enphase tokens for session for user %s: %s", session.UserId, err)
 			continue
 		}
 
