@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -148,42 +147,27 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 			return
 		}
 
-		var authRsp ecobee.OAuthTokenResponse
-		if err := json.Unmarshal([]byte(recipient), &authRsp); err != nil {
-			httpError(w, "failed to json-unmarshal Recipient as OAuthTokenResponse", err, http.StatusInternalServerError)
-			return
-		}
-
-		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, authRsp.RefreshToken)
+		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, recipient)
 		if err != nil {
 			httpError(w, "failed to refresh ecobee tokens", err, http.StatusInternalServerError)
 			return
 		}
 
-		jsonStr, err := json.Marshal(newRsp)
-		if err != nil {
-			httpError(w, "failed to json-marshal auth response", err, http.StatusInternalServerError)
+		if err := svr.saveEcobeeData(ctx, newRsp, session, systemId); err != nil {
+			httpError(w, err.Error(), nil, http.StatusInternalServerError)
 			return
 		}
-		recipient = string(jsonStr)
+	} else {
+		// for all non-Ecobee kinds, recipient is required
+		if recipient == "" {
+			httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
+			return
+		}
 
-		defer func() {
-			err := svr.ecobeeClient.SendMessage(ctx, newRsp.AccessToken, "Hello Henry. \nYou smell like a goose.")
-			if err != nil {
-				log.Printf("failed to send ecobee message: %s", err)
-			}
-		}()
-	}
-
-	// for all non-Ecobee kinds, recipient is required
-	if recipient == "" {
-		httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
-		return
-	}
-
-	if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, kind, recipient); err != nil {
-		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
-		return
+		if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, kind, recipient); err != nil {
+			httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
+			return
+		}
 	}
 
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
@@ -276,20 +260,8 @@ func (svr *server) ecobeeLoginHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jsonStr, err := json.Marshal(authRsp)
-	if err != nil {
-		httpError(w, "failed to json-marshal auth response", err, http.StatusInternalServerError)
-		return
-	}
-
-	if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, notifications.Ecobee, string(jsonStr)); err != nil {
-		httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
-		return
-	}
-
-	message := fmt.Sprintf("Thermostat successfully connected to Enphase system %d 🌤", systemId)
-	if err := svr.ecobeeClient.SendMessage(ctx, authRsp.AccessToken, message); err != nil {
-		httpError(w, "failed to send message to ecobee device", err, http.StatusInternalServerError)
+	if err := svr.saveEcobeeData(ctx, authRsp, session, systemId); err != nil {
+		httpError(w, err.Error(), nil, http.StatusInternalServerError)
 		return
 	}
 
@@ -452,6 +424,36 @@ func (svr *server) enphaseCallbackUrl(r *http.Request) string {
 		scheme = r.URL.Scheme
 	}
 	return fmt.Sprintf("%s://%s/enphase/oauth/callback", scheme, svr.Host(r))
+}
+
+func (svr *server) saveEcobeeData(ctx context.Context, authRsp *ecobee.OAuthTokenResponse, session *storage.AuthSession, systemId int64) error {
+	thermostats, err := svr.ecobeeClient.FetchThermostats(authRsp.AccessToken)
+	if err != nil {
+		return fmt.Errorf("failed to fetch thermostats: %w", err)
+	}
+
+	err = storage.InsertEcobeeAccount(ctx, svr.db, session.UserId, systemId, authRsp.AccessToken, authRsp.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("failed to save ecobee account: %w", err)
+	}
+
+	for _, thermostat := range thermostats {
+		err := storage.InsertEcobeeThermostat(ctx, svr.db, session.UserId, systemId, thermostat.Identifier)
+		if err != nil {
+			return fmt.Errorf("failed to save ecobee thermostat %q: %w", thermostat.Identifier, err)
+		}
+	}
+
+	if err := storage.InsertNotifier(ctx, svr.db, session.UserId, systemId, notifications.Ecobee, ""); err != nil {
+		return fmt.Errorf("failed to save new config for system %d: %w", systemId, err)
+	}
+
+	message := fmt.Sprintf("Thermostat successfully connected to Enphase system %d", systemId)
+	if err := svr.ecobeeClient.SendMessage(ctx, authRsp.AccessToken, message); err != nil {
+		return fmt.Errorf("failed to send message to ecobee device: %w", err)
+	}
+
+	return nil
 }
 
 func getCurrentSession(ctx context.Context, r *http.Request, db *sql.DB) (*storage.AuthSession, []*enphase.System, error) {

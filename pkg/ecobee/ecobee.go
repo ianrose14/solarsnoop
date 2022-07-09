@@ -7,8 +7,14 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
+	"time"
+)
+
+const (
+	timeFmt = "2006-01-02 15:04:05"
 )
 
 type Client struct {
@@ -25,6 +31,40 @@ type OAuthTokenResponse struct {
 	ExpiresIn    int    `json:"expires_in"`
 	RefreshToken string `json:"refresh_token"`
 	Scope        string `json:"scope"`
+}
+
+type Thermostat struct {
+	Identifier     string
+	Name           string
+	ThermostatRev  string `json:"thermostatRev"`
+	IsRegistered   bool   `json:"isRegistered"`
+	ModelNumber    string `json:"modelNumber"`
+	Brand          string
+	Features       string
+	LastModified   string    `json:"lastModified"`
+	LastModifiedTs time.Time `json:"-"`
+	ThermostatTime string    `json:"thermostatTime"`
+	ThermostatTs   time.Time `json:"-"`
+	UTCTime        string    `json:"utcTime"`
+	UTCTs          time.Time `json:"-"`
+	Weather        []Weather
+}
+
+type Weather struct {
+	Timestamp      string
+	WeatherStation string `json:"weatherStation"`
+	Forecasts      []WeatherForecast
+}
+
+type WeatherForecast struct {
+	WeatherSensor int    `json:"weatherSymbol"`
+	DateTime      string `json:"dateTime"`
+	Condition     string
+	Temperature   int
+	Pressure      int
+	Sky           int
+	TempHigh      int `json:"tempHigh"`
+	TempLow       int `json:"tempLow"`
 }
 
 // TODO(ianrose): check for vacation (or hold?) events - maybe we can differentiate manual vs programmatic hold events by always setting the end time to some specific # of seconds
@@ -108,6 +148,74 @@ func (c *Client) postFunction(_ context.Context, accessToken string, funcType st
 	}
 
 	return nil
+}
+
+func (c *Client) FetchThermostats(accessToken string) ([]*Thermostat, error) {
+	const urlstr = "https://api.ecobee.com/1/thermostat"
+
+	var request struct {
+		Selection struct {
+			SelectionType string `json:"selectionType"`
+		} `json:"selection"`
+	}
+	request.Selection.SelectionType = "registered"
+
+	js, err := json.Marshal(&request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to json-encode body: %w", err)
+	}
+
+	qs := url.Values{"json": []string{string(js)}}
+
+	req, err := http.NewRequest("GET", urlstr+"?"+qs.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	rsp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET failure: %w", err)
+	}
+	defer drainAndClose(rsp.Body)
+
+	if rsp.StatusCode >= 300 {
+		err := httpResponseError(rsp)
+		return nil, fmt.Errorf("GET failure: %w", err)
+	}
+
+	var body struct {
+		ThermostatList []*Thermostat `json:"thermostatList"`
+	}
+
+	if err := json.NewDecoder(rsp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to parse response body: %w", err)
+	}
+
+	for _, thermostat := range body.ThermostatList {
+		if thermostat.ThermostatTime != "" {
+			if ts, err := time.Parse(timeFmt, thermostat.ThermostatTime); err != nil {
+				log.Printf("warning: failed to parse ThermostatTime of %s: %s", thermostat.Identifier, err)
+			} else {
+				thermostat.ThermostatTs = ts
+			}
+
+			if ts, err := time.Parse(timeFmt, thermostat.LastModified); err != nil {
+				log.Printf("warning: failed to parse LastModified of %s: %s", thermostat.Identifier, err)
+			} else {
+				thermostat.LastModifiedTs = ts
+			}
+
+			if ts, err := time.Parse(timeFmt, thermostat.UTCTime); err != nil {
+				log.Printf("warning: failed to parse UTCTime of %s: %s", thermostat.Identifier, err)
+			} else {
+				thermostat.UTCTs = ts
+			}
+		}
+	}
+
+	return body.ThermostatList, nil
 }
 
 func (c *Client) RefreshTokens(ctx context.Context, refreshToken string) (*OAuthTokenResponse, error) {

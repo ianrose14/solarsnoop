@@ -96,6 +96,11 @@ func main() {
 	mux.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
 	mux.Handle("/static/", http.FileServer(http.FS(staticContent)))
 
+	// NOSUBMIT:
+	svr.refreshEnphaseTokens(ctx)
+	svr.refreshEcobeeTokens(ctx)
+	svr.refreshThermostats(ctx)
+
 	// TODO: 1 minute ticker to refresh all enphase and ecobee tokens that are < 15min from expiration?
 	wrap := func(f func(context.Context) error) func() {
 		return func() {
@@ -111,7 +116,11 @@ func main() {
 	if _, err := c.AddFunc("*/15 * * * *", wrap(svr.refreshEcobeeTokens)); err != nil {
 		log.Fatalf("bad cronspec: %s", err)
 	}
-	if _, err := c.AddFunc("*/5 * * * *", wrap(svr.checkForUpdates)); err != nil {
+	// TODO(ianrose): more frequent:
+	if _, err := c.AddFunc("0 12 * * *", wrap(svr.checkForUpdates)); err != nil {
+		log.Fatalf("bad cronspec: %s", err)
+	}
+	if _, err := c.AddFunc("0 12 * * *", wrap(svr.refreshThermostats)); err != nil {
 		log.Fatalf("bad cronspec: %s", err)
 	}
 	c.Start()
@@ -128,13 +137,12 @@ func main() {
 
 	// TODO: in a handler wrapper, redirect http to https (in production only)
 
-	// NOSUBMIT
-	const inProduction = true
+	const inDev = runtime.GOOS == "darwin"
 
 	// when testing locally it doesn't make sense to start
 	// HTTPS server, so only do it in production.
 	// In real code, I control this with -production cmd-line flag
-	if inProduction {
+	if !inDev {
 		if err := os.MkdirAll(*certsDir, 0777); err != nil {
 			log.Fatalf("failed to create certs dir: %s", err)
 		}
@@ -157,10 +165,6 @@ func main() {
 		go func() {
 			log.Printf("listening on port 443")
 
-			//err := http.ListenAndServeTLS(":https", "", "", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			//	log.Printf("request for %s with Host=%s and Proto=%s", r.URL, r.Host, r.Proto)
-			//	httpsSrv.Handler.ServeHTTP(w, r)
-			//}))
 			err := httpsSrv.ListenAndServeTLS("", "")
 			if err != nil {
 				log.Fatalf("httpsSrv.ListendAndServeTLS() failed: %s", err)
@@ -200,37 +204,21 @@ func (svr *server) refreshEcobeeTokens(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	notifiers, err := storage.QueryAllNotifiers(ctx, svr.db)
+	accounts, err := storage.QueryEcobeeAccounts(ctx, svr.db)
 	if err != nil {
-		return fmt.Errorf("failed to query for notifiers: %w", err)
+		return fmt.Errorf("failed to query for ecobee accounts: %w", err)
 	}
 
 	var updated int
-	for _, notifier := range notifiers {
-		if notifier.Kind != notifications.Ecobee {
-			continue
-		}
-
-		var authRsp ecobee.OAuthTokenResponse
-		if err := json.Unmarshal([]byte(notifier.Recipient), &authRsp); err != nil {
-			log.Printf("failed to json-unmarshal Recipient into auth response for notifier %d: %s", notifier.Id, err)
-			continue
-		}
-
-		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, authRsp.RefreshToken)
+	for _, account := range accounts {
+		newRsp, err := svr.ecobeeClient.RefreshTokens(ctx, account.RefreshToken)
 		if err != nil {
-			log.Printf("failed to refresh ecobee tokens for notifier %d: %s", notifier.Id, err)
+			log.Printf("failed to refresh ecobee tokens for enphase system %d: %s", account.EnphaseSystemId, err)
 			continue
 		}
 
-		jsonStr, err := json.Marshal(newRsp)
-		if err != nil {
-			log.Printf("failed to json-marshal auth response for notifier %d: %s", notifier.Id, err)
-			continue
-		}
-
-		if err := storage.UpdateNotifier(ctx, svr.db, notifier.Id, string(jsonStr)); err != nil {
-			log.Printf("failed to update db for notifier %d: %s", notifier.Id, err)
+		if err := storage.UpdateEcobeeAccount(ctx, svr.db, account.UserId, account.EnphaseSystemId, newRsp.AccessToken); err != nil {
+			log.Printf("failed to update db for enphase system %d %d: %s", account.EnphaseSystemId, err)
 			continue
 		}
 
@@ -273,6 +261,56 @@ func (svr *server) refreshEnphaseTokens(ctx context.Context) error {
 	return nil
 }
 
+func (svr *server) refreshThermostats(ctx context.Context) error {
+	conn, err := svr.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+	defer conn.Close()
+
+	notifiers, err := storage.QueryAllNotifiers(ctx, svr.db)
+	if err != nil {
+		return fmt.Errorf("failed to query for notifiers: %w", err)
+	}
+
+	var updated int
+	for _, notifier := range notifiers {
+		if notifier.Kind != notifications.Ecobee {
+			continue
+		}
+
+		var authRsp ecobee.OAuthTokenResponse
+		if err := json.Unmarshal([]byte(notifier.Recipient), &authRsp); err != nil {
+			log.Printf("failed to json-unmarshal Recipient into auth response for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		thermostats, err := svr.ecobeeClient.FetchThermostats(authRsp.AccessToken)
+		if err != nil {
+			log.Printf("failed to fetch thermostats for notifier %d: %s", notifier.Id, err)
+			continue
+		}
+
+		for _, thermostat := range thermostats {
+			log.Printf("thermostat %s (%s)", thermostat.Identifier, thermostat.Name)
+			log.Printf("UTCTime = %s", thermostat.UTCTs)
+			log.Printf("ThermostatTime = %s", thermostat.ThermostatTs)
+			log.Printf("Weather = %v", thermostat.Weather)
+			log.Printf("lastmodified = %s", thermostat.LastModifiedTs)
+
+			tzdiff := thermostat.ThermostatTs.Sub(thermostat.UTCTs)
+			tzOffset := tzdiff / time.Minute
+
+			log.Printf("tzoffset (minutes) = %d", tzOffset)
+		}
+
+		updated++
+	}
+
+	log.Printf("refreshThermostats complete: refreshed %d ecobees", updated)
+	return nil
+}
+
 func (svr *server) checkForUpdates(ctx context.Context) error {
 	sessions, err := storage.QuerySessions(ctx, svr.db, "" /* all */)
 	if err != nil {
@@ -290,6 +328,25 @@ func (svr *server) checkForUpdates(ctx context.Context) error {
 
 		log.Printf("found %d systems for user %s", len(systems), session.UserId)
 		for _, system := range systems {
+			calculateDesiredAcount
+
+			/*
+			 * On each tick:
+			 * 1. calculate desired action (HOLD, PRODUCE or CONSUME) and "reason" (text)
+			 *   - this can probably be 100% based on the enphase systems timezone + recent usage/production
+			 * 2. apply desired action to each notifier (rename to actor? or actuator?)
+			 * 3. this results in a executed action (again, HOLD, PRODUCE or CONSUME) and "reason" (text)
+			 * 4. the realized action can either succeed or fail
+			 * 5. all of these are stored in a log: desired_action, desired_action_reason, executed_action, executed_action_reason, result
+			 *
+			 * example 1: desired = CONSUME due to overproduction, executed = HOLD due to vacation event on thermostat, result = success (trivially)
+			 * example 2: desired = HOLD due to night-time, executed = HOLD (no reason), result = success (trivially)
+			 * example 3: desired = CONSUME due to overproduction, executed = CONSUME due to thermostat ready, result = fail (http error)
+			 * example 4: desired = PRODUCE due to overconsumption, executed = HOLD due to change to thermostat state, result = success (trivially)
+			 */
+
+			// If it is morning/evening/night for this system, skip it to save API quota.
+
 			// We want to start at the beginning of the last FULL 15 minute interval,
 			// but also it can (anecdotally) take up to 5 minutes for data to appear.
 			// So our start should be so somewhere between 20 and 35 minutes ago.
