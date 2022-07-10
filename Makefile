@@ -33,3 +33,6 @@ docker-build:
 
 run:
 	go run solarsnoop.go handlers.go -host fizzbazz.com
+
+sql:
+	./bin/sqlc -f config/sqlc.yaml generate
