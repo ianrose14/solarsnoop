@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/ianrose14/solarsnoop/internal"
-	"github.com/ianrose14/solarsnoop/internal/notifications"
+	"github.com/ianrose14/solarsnoop/internal/powersinks"
 	"github.com/ianrose14/solarsnoop/internal/powertrend"
 	"github.com/ianrose14/solarsnoop/internal/storage"
 	"github.com/ianrose14/solarsnoop/pkg/ecobee"
@@ -82,7 +82,7 @@ func main() {
 		ecobeeClient:  ecobee.NewClient(secrets.Ecobee.ApiKey),
 		enphaseClient: enphase.NewClient(secrets.Enphase.ApiKey, secrets.Enphase.ClientID, secrets.Enphase.ClientSecret),
 		secrets:       secrets,
-		notifier:      notifications.NewSender(secrets.SendGrid.ApiKey),
+		notifier:      powersinks.NewSender(secrets.SendGrid.ApiKey),
 		host:          *host,
 	}
 
@@ -91,8 +91,8 @@ func main() {
 	mux.HandleFunc("/logout", svr.logoutHandler)
 	mux.HandleFunc("/ecobee/oauth/callback", svr.ecobeeLoginHandler)
 	mux.HandleFunc("/enphase/oauth/callback", svr.enphaseLoginHandler)
-	mux.HandleFunc("/notifications/add", svr.addNotificationHandler)
-	mux.HandleFunc("/notifications/delete", svr.deleteNotificationHandler)
+	mux.HandleFunc("/powersinks/add", svr.addPowersinkHandler)
+	mux.HandleFunc("/powersinks/delete", svr.deletePowersinkHandler)
 	mux.Handle("/favicon.ico", http.FileServer(http.FS(staticContent)))
 	mux.Handle("/static/", http.FileServer(http.FS(staticContent)))
 
@@ -192,7 +192,7 @@ type server struct {
 	ecobeeClient  *ecobee.Client
 	enphaseClient *enphase.Client
 	secrets       *internal.SecretsFile
-	notifier      *notifications.Sender
+	notifier      *powersinks.Sender
 	host          string
 }
 
@@ -272,26 +272,26 @@ func (svr *server) refreshThermostats(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	notifiers, err := storage.New(svr.db).QueryNotifiersAll(ctx)
+	sinks, err := storage.New(svr.db).QueryPowersinksAll(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to query for notifiers: %w", err)
+		return fmt.Errorf("failed to query for powersinks: %w", err)
 	}
 
 	var updated int
-	for _, notifier := range notifiers {
-		if notifier.Kind() != notifications.Ecobee {
+	for _, powersink := range sinks {
+		if powersink.Kind() != powersinks.Ecobee {
 			continue
 		}
 
 		var authRsp ecobee.OAuthTokenResponse
-		if err := json.Unmarshal([]byte(notifier.Recipient.String), &authRsp); err != nil {
-			log.Printf("failed to json-unmarshal Recipient into auth response for notifier %d: %s", notifier.NotifierID, err)
+		if err := json.Unmarshal([]byte(powersink.Recipient.String), &authRsp); err != nil {
+			log.Printf("failed to json-unmarshal Recipient into auth response for powersink %d: %s", powersink.PowersinkID, err)
 			continue
 		}
 
 		thermostats, err := svr.ecobeeClient.FetchThermostats(authRsp.AccessToken)
 		if err != nil {
-			log.Printf("failed to fetch thermostats for notifier %d: %s", notifier.NotifierID, err)
+			log.Printf("failed to fetch thermostats for powersink %d: %s", powersink.PowersinkID, err)
 			continue
 		}
 
@@ -397,28 +397,28 @@ func (svr *server) checkForUpdates(ctx context.Context) error {
 				continue
 			}
 
-			queryParams := storage.QueryNotifierForSystemParams{
+			queryParams := storage.QueryPowersinkForSystemParams{
 				UserID:   session.UserID,
 				SystemID: system.SystemID,
 			}
-			notifs, err := storage.New(svr.db).QueryNotifierForSystem(ctx, queryParams)
+			sinks, err := storage.New(svr.db).QueryPowersinkForSystem(ctx, queryParams)
 			if err != nil {
-				log.Printf("failed to query configured notifications for system %d of user %s: %s", system.SystemID, session.UserID, err)
+				log.Printf("failed to query configured powersinks for system %d of user %s: %s", system.SystemID, session.UserID, err)
 				continue
 			}
 
-			log.Printf("found %d configured notifications for system %d of user %s", len(notifs), system.SystemID, session.UserID)
+			log.Printf("found %d configured powersinks for system %d of user %s", len(sinks), system.SystemID, session.UserID)
 
-			for _, notif := range notifs {
-				sendErr := svr.notifier.Send(ctx, notif.Kind(), notif.Recipient.String, phase)
+			for _, powersink := range sinks {
+				sendErr := svr.notifier.Send(ctx, powersink.Kind(), powersink.Recipient.String, phase)
 
 				// always record the notification attempt, regardless of success/failure
-				//if err := storage.InsertMessageAttempt(ctx, svr.db, notif.NotifierID, phase, sendErr); err != nil {
+				//if err := storage.InsertMessageAttempt(ctx, svr.db, powersink.NotifierID, phase, sendErr); err != nil {
 				//	log.Printf("failed to write notification attempt to database: %s", err)
 				//}
 
 				if sendErr != nil {
-					log.Printf("failed to send notification for system %d of user %s: %s", system.SystemID, session.UserID, sendErr)
+					log.Printf("failed to notify powersink for system %d of user %s: %s", system.SystemID, session.UserID, sendErr)
 					continue
 				}
 			}

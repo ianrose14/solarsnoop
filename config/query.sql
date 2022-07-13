@@ -1,5 +1,5 @@
 -- name: InsertMessage :exec
-INSERT INTO message_log(notifier_id, timestamp, state_change, success, error_message)
+INSERT INTO message_log(powersink_id, timestamp, state_change, success, error_message)
     VALUES($1, $2, $3, $4, $5);
 
 -- name: InsertEnphaseSystem :exec
@@ -28,19 +28,19 @@ SELECT user_id, enphase_system_id, access_token, refresh_token, created_time, la
 -- name: UpdateEcobeeAccessToken :exec
 UPDATE ecobee_accounts SET access_token=$1 WHERE user_id=$2 AND enphase_system_id=$3;
 
--- name: DeleteNotifier :exec
-DELETE FROM notifiers WHERE user_id=$1 AND system_id=$2 AND notifier_id=$3;
+-- name: DeletePowersink :exec
+DELETE FROM powersinks WHERE user_id=$1 AND system_id=$2 AND powersink_id=$3;
 
--- name: InsertNotifier :exec
-INSERT INTO notifiers(user_id, system_id, created, notifier_kind, recipient)
+-- name: InsertPowersink :exec
+INSERT INTO powersinks(user_id, system_id, created, powersink_kind, recipient)
     VALUES($1, $2, $3, $4, $5);
 
--- name: QueryNotifierForSystem :many
-SELECT notifier_id, notifier_kind, recipient FROM notifiers
+-- name: QueryPowersinkForSystem :many
+SELECT powersink_id, powersink_kind, recipient FROM powersinks
     WHERE user_id=$1 AND system_id=$2;
 
--- name: QueryNotifiersAll :many
-SELECT notifier_id, notifier_kind, recipient FROM notifiers;
+-- name: QueryPowersinksAll :many
+SELECT powersink_id, powersink_kind, recipient FROM powersinks;
 
 -- name: QuerySessionsByUser :many
 SELECT session_token FROM auth_sessions WHERE user_id=$1;

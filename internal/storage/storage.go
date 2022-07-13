@@ -5,15 +5,15 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/ianrose14/solarsnoop/internal/notifications"
+	"github.com/ianrose14/solarsnoop/internal/powersinks"
 )
 
-func (row QueryNotifiersAllRow) Kind() notifications.Kind {
-	return notifications.Kind(row.NotifierKind)
+func (row QueryPowersinksAllRow) Kind() powersinks.Kind {
+	return powersinks.Kind(row.PowersinkKind)
 }
 
-func (row QueryNotifierForSystemRow) Kind() notifications.Kind {
-	return notifications.Kind(row.NotifierKind)
+func (row QueryPowersinkForSystemRow) Kind() powersinks.Kind {
+	return powersinks.Kind(row.PowersinkKind)
 }
 
 func Str(s string) sql.NullString {

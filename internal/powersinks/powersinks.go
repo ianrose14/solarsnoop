@@ -1,4 +1,4 @@
-package notifications
+package powersinks
 
 import (
 	"context"
@@ -25,6 +25,7 @@ func (k Kind) IsValid() bool {
 	}
 }
 
+// TODO(ianrose): rename to notifier?
 type Sender struct {
 	sendgridApiKey string
 }
@@ -38,21 +39,21 @@ func NewSender(sendgridApiKey string) *Sender {
 func (n *Sender) Send(ctx context.Context, kind Kind, recipient string, phase powertrend.Phase) error {
 	switch kind {
 	case SMS:
-		return n.sendSMSNotification(ctx, recipient, phase)
+		return n.sendSMS(ctx, recipient, phase)
 	case Email:
-		return n.sendEmailNotification(ctx, recipient, phase)
+		return n.sendEmail(ctx, recipient, phase)
 	case Ecobee:
-		return n.sendEcobeeNotification(ctx, recipient, phase)
+		return n.sendEcobeeCommand(ctx, recipient, phase)
 	default:
 		return fmt.Errorf("unsupported Kind: %s", kind)
 	}
 }
 
-func (n *Sender) sendEcobeeNotification(context.Context, string, powertrend.Phase) error {
+func (n *Sender) sendEcobeeCommand(context.Context, string, powertrend.Phase) error {
 	return errors.New("unimplemented")
 }
 
-func (n *Sender) sendEmailNotification(context.Context, string, powertrend.Phase) error {
+func (n *Sender) sendEmail(context.Context, string, powertrend.Phase) error {
 	/*
 		from := mail.NewEmail("Example User", "test@example.com")
 			subject := "Sending with Twilio SendGrid is Fun"
@@ -73,6 +74,6 @@ func (n *Sender) sendEmailNotification(context.Context, string, powertrend.Phase
 	return errors.New("unimplemented")
 }
 
-func (n *Sender) sendSMSNotification(context.Context, string, powertrend.Phase) error {
+func (n *Sender) sendSMS(context.Context, string, powertrend.Phase) error {
 	return errors.New("unimplemented")
 }

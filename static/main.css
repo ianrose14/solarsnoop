@@ -7,22 +7,22 @@ table.main th {
     vertical-align: top;
 }
 
-.notifications {
+.actions {
     white-space: nowrap;
     margin-bottom: 15px;
 }
 
-.notifications form {
+.actions form {
     margin-top: 8px;
     margin-left: 25px;
 }
 
-.notifications form.form-btn-only {
+.actions form.form-btn-only {
     display: inline-block;
     margin-left: 10px;
 }
 
-.notifications form.form-btn-only button {
+.actions form.form-btn-only button {
     padding: 0;
     height: 100%;
     border: 0;

@@ -25,7 +25,7 @@
   <body style="padding: 10px" class="container">
     <h3>Solar Snoop</h3>
 
-    <p>Keep an eye on your solar production and get notifications when your system's net generation is positive!</p>
+    <p>Keep an eye on your solar production and perform actions when your system's net generation is positive!</p>
 
     {{ if .UserId }}
     <table class="main">
@@ -42,20 +42,20 @@
         </td>
       </tr>
       <tr>
-        <th>Notifications:</th>
+        <th>Actions:</th>
         <td>
-        <div class="notifications">
-          {{ if not .Notifiers }}
+        <div class="actions">
+          {{ if not .Powersinks }}
             (none currently configured)
           {{ else }}
             <em>configured:</em>
             <ul>
-              {{ range .Notifiers }}
+              {{ range .Powersinks }}
                 <li>
                   {{ .Kind }} {{ if eq .Kind "ecobee" }} 🔌 {{ else }} ({{ .Recipient }}) {{ end }}
                     &rarr; Site #{{ .SystemId }} ({{ .SystemName }})
-                  <form method="POST" action="/notifications/delete" class="form-inline form-btn-only">
-                    <input type="hidden" name="notifierId" value="{{.Id}}">
+                  <form method="POST" action="/powersinks/delete" class="form-inline form-btn-only">
+                    <input type="hidden" name="powersinkId" value="{{.Id}}">
                     <input type="hidden" name="systemId" value="{{.SystemId}}">
                     <b><button type="submit" class="form-control" title="delete">Ｘ</button></b>
                   </form>
@@ -64,9 +64,9 @@
             </ul>
           {{ end }}
         </div>
-        <div class="notifications">
-            <em>Add notification:</em> <a href="/static/help/notifications.html" target="_blank" class="help">help🚨</a>
-            <form method="POST" action="/notifications/add" class="form-inline">
+        <div class="powersinks">
+            <em>Add Action:</em> <a href="/static/help/actions.html" target="_blank" class="help">help🚨</a>
+            <form method="POST" action="/powersinks/add" class="form-inline">
               <select name="systemId" class="form-control">
                 <option>(choose site)</option>
                 {{ range .Systems }}

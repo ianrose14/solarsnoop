@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"cloud.google.com/go/compute/metadata"
-	"github.com/ianrose14/solarsnoop/internal/notifications"
+	"github.com/ianrose14/solarsnoop/internal/powersinks"
 	"github.com/ianrose14/solarsnoop/internal/storage"
 	"github.com/ianrose14/solarsnoop/pkg/ecobee"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
@@ -95,7 +95,7 @@ func (svr *server) logoutHandler(rw http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
-func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Request) {
+func (svr *server) addPowersinkHandler(rw http.ResponseWriter, r *http.Request) {
 	w := httpserver.NewResponseWriterPeeker(rw)
 	ctx := r.Context()
 
@@ -122,7 +122,7 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	kind := notifications.Kind(strings.ToLower(r.Form.Get("kind")))
+	kind := powersinks.Kind(strings.ToLower(r.Form.Get("kind")))
 	if kind == "" {
 		httpError(w, "'kind' is required", nil, http.StatusBadRequest)
 		return
@@ -141,7 +141,7 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if kind == notifications.Ecobee {
+	if kind == powersinks.Ecobee {
 		if recipient == "" {
 			// initiate oauth flow
 			qs := make(url.Values)
@@ -172,14 +172,14 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 			return
 		}
 
-		params := storage.InsertNotifierParams{
-			UserID:       session.UserID,
-			SystemID:     systemId,
-			Created:      time.Now(),
-			NotifierKind: string(kind),
-			Recipient:    storage.Str(recipient),
+		params := storage.InsertPowersinkParams{
+			UserID:        session.UserID,
+			SystemID:      systemId,
+			Created:       time.Now(),
+			PowersinkKind: string(kind),
+			Recipient:     storage.Str(recipient),
 		}
-		if err := storage.New(svr.db).InsertNotifier(ctx, params); err != nil {
+		if err := storage.New(svr.db).InsertPowersink(ctx, params); err != nil {
 			httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
 			return
 		}
@@ -188,7 +188,7 @@ func (svr *server) addNotificationHandler(rw http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
 }
 
-func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Request) {
+func (svr *server) deletePowersinkHandler(rw http.ResponseWriter, r *http.Request) {
 	w := httpserver.NewResponseWriterPeeker(rw)
 	ctx := r.Context()
 
@@ -209,7 +209,7 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	notifierId, err := readInt64Param(r.Form, "notifierId")
+	powersinkId, err := readInt64Param(r.Form, "powersinkId")
 	if err != nil {
 		httpError(w, err.Error(), nil, http.StatusBadRequest) // this errMsg is always safe to echo to client
 		return
@@ -221,13 +221,13 @@ func (svr *server) deleteNotificationHandler(rw http.ResponseWriter, r *http.Req
 		return
 	}
 
-	params := storage.DeleteNotifierParams{
-		UserID:     session.UserID,
-		SystemID:   systemId,
-		NotifierID: int32(notifierId),
+	params := storage.DeletePowersinkParams{
+		UserID:      session.UserID,
+		SystemID:    systemId,
+		PowersinkID: int32(powersinkId),
 	}
-	if err := storage.New(svr.db).DeleteNotifier(ctx, params); err != nil {
-		httpError(w, fmt.Sprintf("failed to delete notifier %d", notifierId), err, http.StatusInternalServerError)
+	if err := storage.New(svr.db).DeletePowersink(ctx, params); err != nil {
+		httpError(w, fmt.Sprintf("failed to delete powersink %d", powersinkId), err, http.StatusInternalServerError)
 		return
 	}
 
@@ -352,8 +352,8 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type NotifierConfig struct {
-		storage.QueryNotifierForSystemRow
+	type PowersinkConfig struct {
+		storage.QueryPowersinkForSystemRow
 		SystemId   int64
 		SystemName string
 	}
@@ -361,7 +361,7 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	args := struct {
 		UserId        string
 		Systems       []*enphase.System
-		Notifiers     []NotifierConfig
+		Powersinks    []PowersinkConfig
 		OAuthClientId string
 		CallbackUrl   string
 	}{
@@ -380,20 +380,20 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, system := range systems {
-		params := storage.QueryNotifierForSystemParams{
+		params := storage.QueryPowersinkForSystemParams{
 			UserID:   session.UserID,
 			SystemID: system.SystemId,
 		}
-		rows, err := storage.New(svr.db).QueryNotifierForSystem(ctx, params)
+		rows, err := storage.New(svr.db).QueryPowersinkForSystem(ctx, params)
 		if err != nil {
-			httpError(w, fmt.Sprintf("failed to query configured notifications for system %d", system.SystemId), err, http.StatusInternalServerError)
+			httpError(w, fmt.Sprintf("failed to query configured powersinks for system %d", system.SystemId), err, http.StatusInternalServerError)
 			return
 		}
 		for _, row := range rows {
-			args.Notifiers = append(args.Notifiers, NotifierConfig{
-				QueryNotifierForSystemRow: row,
-				SystemId:                  system.SystemId,
-				SystemName:                system.Name,
+			args.Powersinks = append(args.Powersinks, PowersinkConfig{
+				QueryPowersinkForSystemRow: row,
+				SystemId:                   system.SystemId,
+				SystemName:                 system.Name,
 			})
 		}
 	}
@@ -481,14 +481,14 @@ func (svr *server) saveEcobeeData(ctx context.Context, authRsp *ecobee.OAuthToke
 		}
 	}
 
-	notifParams := storage.InsertNotifierParams{
-		UserID:       session.UserID,
-		SystemID:     systemId,
-		Created:      time.Now(),
-		NotifierKind: string(notifications.Ecobee),
-		Recipient:    sql.NullString{},
+	powersinkParams := storage.InsertPowersinkParams{
+		UserID:        session.UserID,
+		SystemID:      systemId,
+		Created:       time.Now(),
+		PowersinkKind: string(powersinks.Ecobee),
+		Recipient:     sql.NullString{},
 	}
-	if err := storage.New(svr.db).InsertNotifier(ctx, notifParams); err != nil {
+	if err := storage.New(svr.db).InsertPowersink(ctx, powersinkParams); err != nil {
 		return fmt.Errorf("failed to save new config for system %d: %w", systemId, err)
 	}
 

@@ -49,18 +49,18 @@ type EnphaseTelemetry struct {
 }
 
 type MessageLog struct {
-	NotifierID   int32
+	PowersinkID  int32
 	Timestamp    time.Time
 	StateChange  string
 	Success      bool
 	ErrorMessage sql.NullString
 }
 
-type Notifier struct {
-	NotifierID   int32
-	UserID       string
-	SystemID     int64
-	Created      time.Time
-	NotifierKind string
-	Recipient    sql.NullString
+type Powersink struct {
+	PowersinkID   int32
+	UserID        string
+	SystemID      int64
+	Created       time.Time
+	PowersinkKind string
+	Recipient     sql.NullString
 }

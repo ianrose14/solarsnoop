@@ -9,18 +9,18 @@ import (
 	"time"
 )
 
-const deleteNotifier = `-- name: DeleteNotifier :exec
-DELETE FROM notifiers WHERE user_id=$1 AND system_id=$2 AND notifier_id=$3
+const deletePowersink = `-- name: DeletePowersink :exec
+DELETE FROM powersinks WHERE user_id=$1 AND system_id=$2 AND powersink_id=$3
 `
 
-type DeleteNotifierParams struct {
-	UserID     string
-	SystemID   int64
-	NotifierID int32
+type DeletePowersinkParams struct {
+	UserID      string
+	SystemID    int64
+	PowersinkID int32
 }
 
-func (q *Queries) DeleteNotifier(ctx context.Context, arg DeleteNotifierParams) error {
-	_, err := q.db.ExecContext(ctx, deleteNotifier, arg.UserID, arg.SystemID, arg.NotifierID)
+func (q *Queries) DeletePowersink(ctx context.Context, arg DeletePowersinkParams) error {
+	_, err := q.db.ExecContext(ctx, deletePowersink, arg.UserID, arg.SystemID, arg.PowersinkID)
 	return err
 }
 
@@ -117,12 +117,12 @@ func (q *Queries) InsertEnphaseTelemetry(ctx context.Context, arg InsertEnphaseT
 }
 
 const insertMessage = `-- name: InsertMessage :exec
-INSERT INTO message_log(notifier_id, timestamp, state_change, success, error_message)
+INSERT INTO message_log(powersink_id, timestamp, state_change, success, error_message)
     VALUES($1, $2, $3, $4, $5)
 `
 
 type InsertMessageParams struct {
-	NotifierID   int32
+	PowersinkID  int32
 	Timestamp    time.Time
 	StateChange  string
 	Success      bool
@@ -131,7 +131,7 @@ type InsertMessageParams struct {
 
 func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) error {
 	_, err := q.db.ExecContext(ctx, insertMessage,
-		arg.NotifierID,
+		arg.PowersinkID,
 		arg.Timestamp,
 		arg.StateChange,
 		arg.Success,
@@ -140,25 +140,25 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) er
 	return err
 }
 
-const insertNotifier = `-- name: InsertNotifier :exec
-INSERT INTO notifiers(user_id, system_id, created, notifier_kind, recipient)
+const insertPowersink = `-- name: InsertPowersink :exec
+INSERT INTO powersinks(user_id, system_id, created, powersink_kind, recipient)
     VALUES($1, $2, $3, $4, $5)
 `
 
-type InsertNotifierParams struct {
-	UserID       string
-	SystemID     int64
-	Created      time.Time
-	NotifierKind string
-	Recipient    sql.NullString
+type InsertPowersinkParams struct {
+	UserID        string
+	SystemID      int64
+	Created       time.Time
+	PowersinkKind string
+	Recipient     sql.NullString
 }
 
-func (q *Queries) InsertNotifier(ctx context.Context, arg InsertNotifierParams) error {
-	_, err := q.db.ExecContext(ctx, insertNotifier,
+func (q *Queries) InsertPowersink(ctx context.Context, arg InsertPowersinkParams) error {
+	_, err := q.db.ExecContext(ctx, insertPowersink,
 		arg.UserID,
 		arg.SystemID,
 		arg.Created,
-		arg.NotifierKind,
+		arg.PowersinkKind,
 		arg.Recipient,
 	)
 	return err
@@ -258,32 +258,32 @@ func (q *Queries) QueryEnphaseSystems(ctx context.Context, userID string) ([]Que
 	return items, nil
 }
 
-const queryNotifierForSystem = `-- name: QueryNotifierForSystem :many
-SELECT notifier_id, notifier_kind, recipient FROM notifiers
+const queryPowersinkForSystem = `-- name: QueryPowersinkForSystem :many
+SELECT powersink_id, powersink_kind, recipient FROM powersinks
     WHERE user_id=$1 AND system_id=$2
 `
 
-type QueryNotifierForSystemParams struct {
+type QueryPowersinkForSystemParams struct {
 	UserID   string
 	SystemID int64
 }
 
-type QueryNotifierForSystemRow struct {
-	NotifierID   int32
-	NotifierKind string
-	Recipient    sql.NullString
+type QueryPowersinkForSystemRow struct {
+	PowersinkID   int32
+	PowersinkKind string
+	Recipient     sql.NullString
 }
 
-func (q *Queries) QueryNotifierForSystem(ctx context.Context, arg QueryNotifierForSystemParams) ([]QueryNotifierForSystemRow, error) {
-	rows, err := q.db.QueryContext(ctx, queryNotifierForSystem, arg.UserID, arg.SystemID)
+func (q *Queries) QueryPowersinkForSystem(ctx context.Context, arg QueryPowersinkForSystemParams) ([]QueryPowersinkForSystemRow, error) {
+	rows, err := q.db.QueryContext(ctx, queryPowersinkForSystem, arg.UserID, arg.SystemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []QueryNotifierForSystemRow
+	var items []QueryPowersinkForSystemRow
 	for rows.Next() {
-		var i QueryNotifierForSystemRow
-		if err := rows.Scan(&i.NotifierID, &i.NotifierKind, &i.Recipient); err != nil {
+		var i QueryPowersinkForSystemRow
+		if err := rows.Scan(&i.PowersinkID, &i.PowersinkKind, &i.Recipient); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -297,26 +297,26 @@ func (q *Queries) QueryNotifierForSystem(ctx context.Context, arg QueryNotifierF
 	return items, nil
 }
 
-const queryNotifiersAll = `-- name: QueryNotifiersAll :many
-SELECT notifier_id, notifier_kind, recipient FROM notifiers
+const queryPowersinksAll = `-- name: QueryPowersinksAll :many
+SELECT powersink_id, powersink_kind, recipient FROM powersinks
 `
 
-type QueryNotifiersAllRow struct {
-	NotifierID   int32
-	NotifierKind string
-	Recipient    sql.NullString
+type QueryPowersinksAllRow struct {
+	PowersinkID   int32
+	PowersinkKind string
+	Recipient     sql.NullString
 }
 
-func (q *Queries) QueryNotifiersAll(ctx context.Context) ([]QueryNotifiersAllRow, error) {
-	rows, err := q.db.QueryContext(ctx, queryNotifiersAll)
+func (q *Queries) QueryPowersinksAll(ctx context.Context) ([]QueryPowersinksAllRow, error) {
+	rows, err := q.db.QueryContext(ctx, queryPowersinksAll)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []QueryNotifiersAllRow
+	var items []QueryPowersinksAllRow
 	for rows.Next() {
-		var i QueryNotifiersAllRow
-		if err := rows.Scan(&i.NotifierID, &i.NotifierKind, &i.Recipient); err != nil {
+		var i QueryPowersinksAllRow
+		if err := rows.Scan(&i.PowersinkID, &i.PowersinkKind, &i.Recipient); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
