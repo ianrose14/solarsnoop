@@ -18,6 +18,9 @@
           case "Ecobee":
             target.placeholder = 'TBD';
             break;
+          case "Logger":
+            target.placeholder = 'n/a';
+            break;
           }
       }
     </script>

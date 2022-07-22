@@ -122,26 +122,27 @@ func (svr *server) addPowersinkHandler(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	kind := powersinks.Kind(strings.ToLower(r.Form.Get("kind")))
-	if kind == "" {
+	channel := powersinks.Channel(strings.ToLower(r.Form.Get("kind")))
+	if channel == "" {
 		httpError(w, "'kind' is required", nil, http.StatusBadRequest)
 		return
 	}
-	if !kind.IsValid() {
+	if !channel.IsValid() {
 		httpError(w, "invalid 'kind' parameter", nil, http.StatusBadRequest)
 		return
 	}
 
 	recipient := r.Form.Get("recipient")
 
-	// TODO(ianrose): validate recipient based on kind
+	// TODO(ianrose): validate recipient based on channel
 
 	if !hasSystemId(systems, systemId) {
 		httpError(w, "invalid 'systemId' parameter", nil, http.StatusBadRequest)
 		return
 	}
 
-	if kind == powersinks.Ecobee {
+	// Ecobee is a special case...
+	if channel == powersinks.Ecobee {
 		if recipient == "" {
 			// initiate oauth flow
 			qs := make(url.Values)
@@ -166,18 +167,17 @@ func (svr *server) addPowersinkHandler(rw http.ResponseWriter, r *http.Request) 
 			return
 		}
 	} else {
-		// for all non-Ecobee kinds, recipient is required
-		if recipient == "" {
+		if channel.RequiresRecipient() && recipient == "" {
 			httpError(w, "'recipient' is required", nil, http.StatusBadRequest)
 			return
 		}
 
 		params := storage.InsertPowersinkParams{
-			UserID:        session.UserID,
-			SystemID:      systemId,
-			Created:       time.Now(),
-			PowersinkKind: string(kind),
-			Recipient:     storage.Str(recipient),
+			UserID:    session.UserID,
+			SystemID:  systemId,
+			Created:   time.Now(),
+			Channel:   string(channel),
+			Recipient: storage.Str(recipient),
 		}
 		if err := storage.New(svr.db).InsertPowersink(ctx, params); err != nil {
 			httpError(w, fmt.Sprintf("failed to save new config for system %d", systemId), err, http.StatusInternalServerError)
@@ -353,7 +353,7 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	type PowersinkConfig struct {
-		storage.QueryPowersinkForSystemRow
+		storage.QueryPowersinksForSystemRow
 		SystemId   int64
 		SystemName string
 	}
@@ -380,20 +380,20 @@ func (svr *server) rootHandler(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, system := range systems {
-		params := storage.QueryPowersinkForSystemParams{
+		params := storage.QueryPowersinksForSystemParams{
 			UserID:   session.UserID,
 			SystemID: system.SystemId,
 		}
-		rows, err := storage.New(svr.db).QueryPowersinkForSystem(ctx, params)
+		rows, err := storage.New(svr.db).QueryPowersinksForSystem(ctx, params)
 		if err != nil {
 			httpError(w, fmt.Sprintf("failed to query configured powersinks for system %d", system.SystemId), err, http.StatusInternalServerError)
 			return
 		}
 		for _, row := range rows {
 			args.Powersinks = append(args.Powersinks, PowersinkConfig{
-				QueryPowersinkForSystemRow: row,
-				SystemId:                   system.SystemId,
-				SystemName:                 system.Name,
+				QueryPowersinksForSystemRow: row,
+				SystemId:                    system.SystemId,
+				SystemName:                  system.Name,
 			})
 		}
 	}
@@ -482,11 +482,11 @@ func (svr *server) saveEcobeeData(ctx context.Context, authRsp *ecobee.OAuthToke
 	}
 
 	powersinkParams := storage.InsertPowersinkParams{
-		UserID:        session.UserID,
-		SystemID:      systemId,
-		Created:       time.Now(),
-		PowersinkKind: string(powersinks.Ecobee),
-		Recipient:     sql.NullString{},
+		UserID:    session.UserID,
+		SystemID:  systemId,
+		Created:   time.Now(),
+		Channel:   string(powersinks.Ecobee),
+		Recipient: sql.NullString{},
 	}
 	if err := storage.New(svr.db).InsertPowersink(ctx, powersinkParams); err != nil {
 		return fmt.Errorf("failed to save new config for system %d: %w", systemId, err)

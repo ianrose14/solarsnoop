@@ -4,20 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/ianrose14/solarsnoop/internal/powersinks"
 )
 
-func (row QueryPowersinksAllRow) Kind() powersinks.Kind {
-	return powersinks.Kind(row.PowersinkKind)
-}
-
-func (row QueryPowersinkForSystemRow) Kind() powersinks.Kind {
-	return powersinks.Kind(row.PowersinkKind)
-}
-
 func Str(s string) sql.NullString {
-	return sql.NullString{String: s}
+	if s != "" {
+		return sql.NullString{String: s, Valid: true}
+	}
+	return sql.NullString{}
 }
 
 func UpsertDatabaseTables(ctx context.Context, db *sql.DB, schema string) error {

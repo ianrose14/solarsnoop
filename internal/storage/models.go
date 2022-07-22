@@ -7,6 +7,17 @@ import (
 	"time"
 )
 
+type ActionsLog struct {
+	PowersinkID    int32
+	Timestamp      time.Time
+	DesiredAction  string
+	DesiredReason  sql.NullString
+	ExecutedAction string
+	ExecutedReason sql.NullString
+	Success        bool
+	SuccessReason  sql.NullString
+}
+
 type AuthSession struct {
 	UserID          string
 	SessionToken    string
@@ -36,6 +47,7 @@ type EnphaseSystem struct {
 	SystemID   int64
 	Name       string
 	PublicName string
+	Timezone   string
 }
 
 type EnphaseTelemetry struct {
@@ -48,19 +60,11 @@ type EnphaseTelemetry struct {
 	ConsumedWatts int64
 }
 
-type MessageLog struct {
-	PowersinkID  int32
-	Timestamp    time.Time
-	StateChange  string
-	Success      bool
-	ErrorMessage sql.NullString
-}
-
 type Powersink struct {
-	PowersinkID   int32
-	UserID        string
-	SystemID      int64
-	Created       time.Time
-	PowersinkKind string
-	Recipient     sql.NullString
+	PowersinkID int32
+	UserID      string
+	SystemID    int64
+	Created     time.Time
+	Channel     string
+	Recipient   sql.NullString
 }

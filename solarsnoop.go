@@ -18,7 +18,6 @@ import (
 
 	"github.com/ianrose14/solarsnoop/internal"
 	"github.com/ianrose14/solarsnoop/internal/powersinks"
-	"github.com/ianrose14/solarsnoop/internal/powertrend"
 	"github.com/ianrose14/solarsnoop/internal/storage"
 	"github.com/ianrose14/solarsnoop/pkg/ecobee"
 	"github.com/ianrose14/solarsnoop/pkg/enphase"
@@ -82,7 +81,7 @@ func main() {
 		ecobeeClient:  ecobee.NewClient(secrets.Ecobee.ApiKey),
 		enphaseClient: enphase.NewClient(secrets.Enphase.ApiKey, secrets.Enphase.ClientID, secrets.Enphase.ClientSecret),
 		secrets:       secrets,
-		notifier:      powersinks.NewSender(secrets.SendGrid.ApiKey),
+		notifier:      powersinks.NewExtApi(*host, secrets.SendGrid.ApiKey),
 		host:          *host,
 	}
 
@@ -192,7 +191,7 @@ type server struct {
 	ecobeeClient  *ecobee.Client
 	enphaseClient *enphase.Client
 	secrets       *internal.SecretsFile
-	notifier      *powersinks.Sender
+	notifier      *powersinks.ExtApi
 	host          string
 }
 
@@ -279,7 +278,7 @@ func (svr *server) refreshThermostats(ctx context.Context) error {
 
 	var updated int
 	for _, powersink := range sinks {
-		if powersink.Kind() != powersinks.Ecobee {
+		if powersinks.Channel(powersink.Channel) != powersinks.Ecobee {
 			continue
 		}
 
@@ -332,21 +331,78 @@ func (svr *server) checkForUpdates(ctx context.Context) error {
 
 		log.Printf("found %d systems for user %s", len(systems), session.UserID)
 		for _, system := range systems {
+			queryParams := storage.QueryPowersinksForSystemParams{
+				UserID:   session.UserID,
+				SystemID: system.SystemID,
+			}
+			sinks, err := storage.New(svr.db).QueryPowersinksForSystem(ctx, queryParams)
+			if err != nil {
+				log.Printf("failed to query configured powersinks for system %d of user %s: %s", system.SystemID, session.UserID, err)
+				continue
+			}
+
+			log.Printf("found %d configured powersinks for system %d of user %s", len(sinks), system.SystemID, session.UserID)
+			factory := powersinks.NewFactory(svr.enphaseClient, &system, &session, svr.notifier)
+
+			for _, sink := range sinks {
+				actions, err := storage.New(svr.db).FetchRecentActions(ctx, sink.PowersinkID)
+				if err != nil {
+					log.Printf("failed to query recent actions from DB for powersink %d: %+v", sink.PowersinkID, err)
+					continue
+				}
+
+				result, err := factory.Execute(ctx, sink, actions)
+				if err != nil {
+					log.Printf("failed to execute powersink %d: %+v", sink.PowersinkID, err)
+					continue
+				}
+				params := storage.RecordActionParams{
+					PowersinkID:    sink.PowersinkID,
+					Timestamp:      time.Now(),
+					DesiredAction:  string(result.Desired),
+					DesiredReason:  storage.Str(result.DesiredReason),
+					ExecutedAction: string(result.Executed),
+					ExecutedReason: storage.Str(result.ExecutedReason),
+					Success:        result.Success,
+					SuccessReason:  storage.Str(result.SuccessReason),
+				}
+				if err := storage.New(svr.db).RecordAction(ctx, params); err != nil {
+					log.Printf("failed to record action to database for powersink %d: %+v", sink.PowersinkID, err)
+				}
+			}
+
 			// calculateDesiredAcount
 
 			/*
 			 * On each tick:
-			 * 1. calculate desired action (HOLD, PRODUCE or CONSUME) and "reason" (text)
-			 *   - this can probably be 100% based on the enphase systems timezone + recent usage/production
-			 * 2. apply desired action to each notifier (rename to actor? or actuator?)
-			 * 3. this results in a executed action (again, HOLD, PRODUCE or CONSUME) and "reason" (text)
-			 * 4. the realized action can either succeed or fail
-			 * 5. all of these are stored in a log: desired_action, desired_action_reason, executed_action, executed_action_reason, result
+			 * 1. query for all enabled powersinks
+			 * 2. for each powersink, check which commands are currently acceptable.  If the only one is NONE,
+			 *    then skip step 3.  examples:
+			 *    - ecobees in vacation mode
+			 *    - sms/email if last command was PRODUCE and it was "recent" (we don't want to spam people)
+			 * 3. calculate desired action (NONE, PRODUCE or CONSUME) and "reason" (text)
+			 *   - this can probably be 100% based on the enphase system's timezone + recent usage/production
+			 * 4. apply desired action to each powersink
+			 * 5. this results in an executed action (again, NONE, PRODUCE or CONSUME) and "reason" (text)
+			 * 6. the realized action can either succeed or fail
+			 * 7. all of these are stored in a log: powersink_id, desired_action, desired_action_reason, executed_action, executed_action_reason, result
 			 *
-			 * example 1: desired = CONSUME due to overproduction, executed = HOLD due to vacation event on thermostat, result = success (trivially)
-			 * example 2: desired = HOLD due to night-time, executed = HOLD (no reason), result = success (trivially)
+			 * ecobee examples:
+			 * example 1: desired = CONSUME due to overproduction, executed = NONE due to vacation event on thermostat, result = success (trivially)
+			 * example 2: desired = PRODUCE due to night-time, executed = PRODUCE (last command still in effect), result = success
+			 * example 2b: desired = PRODUCE due to night-time, executed = NONE (last command not in effect), result = success (trivially)
 			 * example 3: desired = CONSUME due to overproduction, executed = CONSUME due to thermostat ready, result = fail (http error)
-			 * example 4: desired = PRODUCE due to overconsumption, executed = HOLD due to change to thermostat state, result = success (trivially)
+			 * example 4: desired = PRODUCE due to overconsumption, executed = NONE due to change to thermostat state, result = success (trivially)
+			 * example 5: desired = NONE due to balanced production, executed = NONE (no reason), result = success (trivially)
+			 *
+			 * SMS/email examples:
+			 * example 1: desired = CONSUME due to overproduction, executed = CONSUME (no reason), result = success
+			 * example 2: desired = CONSUME due to overproduction, executed = CONSUME (no reason), result = fail (http error)
+			 * example 3: desired = PRODUCE due to night-time, executed = PRODUCE (last command recent), result = success
+			 * example 4: desired = PRODUCE due to night-time, executed = NONE (last command not recent), result = success (trivially)
+			 * example 5: desired = PRODUCE due to overconsumption, executed = PRODUCE (no reason), result = success
+			 * example 6: desired = NONE due to balanced production, executed = NONE (no reason), result = success (trivially)
+			 *
 			 */
 
 			// If it is morning/evening/night for this system, skip it to save API quota.
@@ -397,20 +453,8 @@ func (svr *server) checkForUpdates(ctx context.Context) error {
 				continue
 			}
 
-			queryParams := storage.QueryPowersinkForSystemParams{
-				UserID:   session.UserID,
-				SystemID: system.SystemID,
-			}
-			sinks, err := storage.New(svr.db).QueryPowersinkForSystem(ctx, queryParams)
-			if err != nil {
-				log.Printf("failed to query configured powersinks for system %d of user %s: %s", system.SystemID, session.UserID, err)
-				continue
-			}
-
-			log.Printf("found %d configured powersinks for system %d of user %s", len(sinks), system.SystemID, session.UserID)
-
-			for _, powersink := range sinks {
-				sendErr := svr.notifier.Send(ctx, powersink.Kind(), powersink.Recipient.String, phase)
+			for _, row := range sinks {
+				sendErr := svr.notifier.Send(ctx, powersinks.Channel(row.Channel), row.Recipient.String, phase)
 
 				// always record the notification attempt, regardless of success/failure
 				//if err := storage.InsertMessageAttempt(ctx, svr.db, powersink.NotifierID, phase, sendErr); err != nil {

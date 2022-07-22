@@ -24,6 +24,52 @@ func (q *Queries) DeletePowersink(ctx context.Context, arg DeletePowersinkParams
 	return err
 }
 
+const fetchRecentActions = `-- name: FetchRecentActions :many
+SELECT timestamp, desired_action, desired_reason, executed_action, executed_reason, success, success_reason
+FROM actions_log WHERE powersink_id=$1 ORDER BY timestamp DESC
+`
+
+type FetchRecentActionsRow struct {
+	Timestamp      time.Time
+	DesiredAction  string
+	DesiredReason  sql.NullString
+	ExecutedAction string
+	ExecutedReason sql.NullString
+	Success        bool
+	SuccessReason  sql.NullString
+}
+
+func (q *Queries) FetchRecentActions(ctx context.Context, powersinkID int32) ([]FetchRecentActionsRow, error) {
+	rows, err := q.db.QueryContext(ctx, fetchRecentActions, powersinkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FetchRecentActionsRow
+	for rows.Next() {
+		var i FetchRecentActionsRow
+		if err := rows.Scan(
+			&i.Timestamp,
+			&i.DesiredAction,
+			&i.DesiredReason,
+			&i.ExecutedAction,
+			&i.ExecutedReason,
+			&i.Success,
+			&i.SuccessReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertEcobeeAccount = `-- name: InsertEcobeeAccount :exec
 INSERT INTO ecobee_accounts(user_id, enphase_system_id, access_token, refresh_token, created_time, last_refresh_time)
     VALUES ($1, $2, $3, $4, $5, $6)
@@ -67,8 +113,8 @@ func (q *Queries) InsertEcobeeThermostat(ctx context.Context, arg InsertEcobeeTh
 }
 
 const insertEnphaseSystem = `-- name: InsertEnphaseSystem :exec
-INSERT INTO enphase_systems(user_id, system_id, name, public_name)
-    VALUES($1, $2, $3, $4)
+INSERT INTO enphase_systems(user_id, system_id, name, public_name, timezone)
+    VALUES($1, $2, $3, $4, $5)
 `
 
 type InsertEnphaseSystemParams struct {
@@ -76,6 +122,7 @@ type InsertEnphaseSystemParams struct {
 	SystemID   int64
 	Name       string
 	PublicName string
+	Timezone   string
 }
 
 func (q *Queries) InsertEnphaseSystem(ctx context.Context, arg InsertEnphaseSystemParams) error {
@@ -84,6 +131,7 @@ func (q *Queries) InsertEnphaseSystem(ctx context.Context, arg InsertEnphaseSyst
 		arg.SystemID,
 		arg.Name,
 		arg.PublicName,
+		arg.Timezone,
 	)
 	return err
 }
@@ -116,41 +164,17 @@ func (q *Queries) InsertEnphaseTelemetry(ctx context.Context, arg InsertEnphaseT
 	return err
 }
 
-const insertMessage = `-- name: InsertMessage :exec
-INSERT INTO message_log(powersink_id, timestamp, state_change, success, error_message)
-    VALUES($1, $2, $3, $4, $5)
-`
-
-type InsertMessageParams struct {
-	PowersinkID  int32
-	Timestamp    time.Time
-	StateChange  string
-	Success      bool
-	ErrorMessage sql.NullString
-}
-
-func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) error {
-	_, err := q.db.ExecContext(ctx, insertMessage,
-		arg.PowersinkID,
-		arg.Timestamp,
-		arg.StateChange,
-		arg.Success,
-		arg.ErrorMessage,
-	)
-	return err
-}
-
 const insertPowersink = `-- name: InsertPowersink :exec
-INSERT INTO powersinks(user_id, system_id, created, powersink_kind, recipient)
+INSERT INTO powersinks(user_id, system_id, created, channel, recipient)
     VALUES($1, $2, $3, $4, $5)
 `
 
 type InsertPowersinkParams struct {
-	UserID        string
-	SystemID      int64
-	Created       time.Time
-	PowersinkKind string
-	Recipient     sql.NullString
+	UserID    string
+	SystemID  int64
+	Created   time.Time
+	Channel   string
+	Recipient sql.NullString
 }
 
 func (q *Queries) InsertPowersink(ctx context.Context, arg InsertPowersinkParams) error {
@@ -158,7 +182,7 @@ func (q *Queries) InsertPowersink(ctx context.Context, arg InsertPowersinkParams
 		arg.UserID,
 		arg.SystemID,
 		arg.Created,
-		arg.PowersinkKind,
+		arg.Channel,
 		arg.Recipient,
 	)
 	return err
@@ -226,13 +250,14 @@ func (q *Queries) QueryEcobeeAccounts(ctx context.Context) ([]EcobeeAccount, err
 }
 
 const queryEnphaseSystems = `-- name: QueryEnphaseSystems :many
-SELECT system_id, name, public_name FROM enphase_systems WHERE user_id=$1 ORDER BY name ASC
+SELECT system_id, name, public_name, timezone FROM enphase_systems WHERE user_id=$1 ORDER BY name ASC
 `
 
 type QueryEnphaseSystemsRow struct {
 	SystemID   int64
 	Name       string
 	PublicName string
+	Timezone   string
 }
 
 func (q *Queries) QueryEnphaseSystems(ctx context.Context, userID string) ([]QueryEnphaseSystemsRow, error) {
@@ -244,46 +269,12 @@ func (q *Queries) QueryEnphaseSystems(ctx context.Context, userID string) ([]Que
 	var items []QueryEnphaseSystemsRow
 	for rows.Next() {
 		var i QueryEnphaseSystemsRow
-		if err := rows.Scan(&i.SystemID, &i.Name, &i.PublicName); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const queryPowersinkForSystem = `-- name: QueryPowersinkForSystem :many
-SELECT powersink_id, powersink_kind, recipient FROM powersinks
-    WHERE user_id=$1 AND system_id=$2
-`
-
-type QueryPowersinkForSystemParams struct {
-	UserID   string
-	SystemID int64
-}
-
-type QueryPowersinkForSystemRow struct {
-	PowersinkID   int32
-	PowersinkKind string
-	Recipient     sql.NullString
-}
-
-func (q *Queries) QueryPowersinkForSystem(ctx context.Context, arg QueryPowersinkForSystemParams) ([]QueryPowersinkForSystemRow, error) {
-	rows, err := q.db.QueryContext(ctx, queryPowersinkForSystem, arg.UserID, arg.SystemID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []QueryPowersinkForSystemRow
-	for rows.Next() {
-		var i QueryPowersinkForSystemRow
-		if err := rows.Scan(&i.PowersinkID, &i.PowersinkKind, &i.Recipient); err != nil {
+		if err := rows.Scan(
+			&i.SystemID,
+			&i.Name,
+			&i.PublicName,
+			&i.Timezone,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -298,13 +289,13 @@ func (q *Queries) QueryPowersinkForSystem(ctx context.Context, arg QueryPowersin
 }
 
 const queryPowersinksAll = `-- name: QueryPowersinksAll :many
-SELECT powersink_id, powersink_kind, recipient FROM powersinks
+SELECT powersink_id, channel, recipient FROM powersinks
 `
 
 type QueryPowersinksAllRow struct {
-	PowersinkID   int32
-	PowersinkKind string
-	Recipient     sql.NullString
+	PowersinkID int32
+	Channel     string
+	Recipient   sql.NullString
 }
 
 func (q *Queries) QueryPowersinksAll(ctx context.Context) ([]QueryPowersinksAllRow, error) {
@@ -316,7 +307,46 @@ func (q *Queries) QueryPowersinksAll(ctx context.Context) ([]QueryPowersinksAllR
 	var items []QueryPowersinksAllRow
 	for rows.Next() {
 		var i QueryPowersinksAllRow
-		if err := rows.Scan(&i.PowersinkID, &i.PowersinkKind, &i.Recipient); err != nil {
+		if err := rows.Scan(&i.PowersinkID, &i.Channel, &i.Recipient); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const queryPowersinksForSystem = `-- name: QueryPowersinksForSystem :many
+SELECT powersink_id, channel, recipient FROM powersinks
+    WHERE user_id=$1 AND system_id=$2
+`
+
+type QueryPowersinksForSystemParams struct {
+	UserID   string
+	SystemID int64
+}
+
+type QueryPowersinksForSystemRow struct {
+	PowersinkID int32
+	Channel     string
+	Recipient   sql.NullString
+}
+
+func (q *Queries) QueryPowersinksForSystem(ctx context.Context, arg QueryPowersinksForSystemParams) ([]QueryPowersinksForSystemRow, error) {
+	rows, err := q.db.QueryContext(ctx, queryPowersinksForSystem, arg.UserID, arg.SystemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []QueryPowersinksForSystemRow
+	for rows.Next() {
+		var i QueryPowersinksForSystemRow
+		if err := rows.Scan(&i.PowersinkID, &i.Channel, &i.Recipient); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -432,6 +462,36 @@ func (q *Queries) QuerySessionsByUser(ctx context.Context, userID string) ([]str
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordAction = `-- name: RecordAction :exec
+INSERT INTO actions_log(powersink_id, timestamp, desired_action, desired_reason, executed_action, executed_reason, success, success_reason)
+    VALUES($1, $2, $3, $4, $5, $6, $7, $8)
+`
+
+type RecordActionParams struct {
+	PowersinkID    int32
+	Timestamp      time.Time
+	DesiredAction  string
+	DesiredReason  sql.NullString
+	ExecutedAction string
+	ExecutedReason sql.NullString
+	Success        bool
+	SuccessReason  sql.NullString
+}
+
+func (q *Queries) RecordAction(ctx context.Context, arg RecordActionParams) error {
+	_, err := q.db.ExecContext(ctx, recordAction,
+		arg.PowersinkID,
+		arg.Timestamp,
+		arg.DesiredAction,
+		arg.DesiredReason,
+		arg.ExecutedAction,
+		arg.ExecutedReason,
+		arg.Success,
+		arg.SuccessReason,
+	)
+	return err
 }
 
 const updateEcobeeAccessToken = `-- name: UpdateEcobeeAccessToken :exec

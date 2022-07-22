@@ -1,17 +1,21 @@
--- name: InsertMessage :exec
-INSERT INTO message_log(powersink_id, timestamp, state_change, success, error_message)
-    VALUES($1, $2, $3, $4, $5);
+-- name: RecordAction :exec
+INSERT INTO actions_log(powersink_id, timestamp, desired_action, desired_reason, executed_action, executed_reason, success, success_reason)
+    VALUES($1, $2, $3, $4, $5, $6, $7, $8);
+
+-- name: FetchRecentActions :many
+SELECT timestamp, desired_action, desired_reason, executed_action, executed_reason, success, success_reason
+FROM actions_log WHERE powersink_id=$1 ORDER BY timestamp DESC;
 
 -- name: InsertEnphaseSystem :exec
-INSERT INTO enphase_systems(user_id, system_id, name, public_name)
-    VALUES($1, $2, $3, $4);
+INSERT INTO enphase_systems(user_id, system_id, name, public_name, timezone)
+    VALUES($1, $2, $3, $4, $5);
 
 -- name: InsertEnphaseTelemetry :exec
 INSERT INTO enphase_telemetry(user_id, system_id, start_at, end_at, inserted_at, produced_watts, consumed_watts)
     VALUES($1, $2, $3, $4, $5, $6, $7);
 
 -- name: QueryEnphaseSystems :many
-SELECT system_id, name, public_name FROM enphase_systems WHERE user_id=$1 ORDER BY name ASC;
+SELECT system_id, name, public_name, timezone FROM enphase_systems WHERE user_id=$1 ORDER BY name ASC;
 
 -- name: InsertEcobeeAccount :exec
 INSERT INTO ecobee_accounts(user_id, enphase_system_id, access_token, refresh_token, created_time, last_refresh_time)
@@ -32,15 +36,15 @@ UPDATE ecobee_accounts SET access_token=$1 WHERE user_id=$2 AND enphase_system_i
 DELETE FROM powersinks WHERE user_id=$1 AND system_id=$2 AND powersink_id=$3;
 
 -- name: InsertPowersink :exec
-INSERT INTO powersinks(user_id, system_id, created, powersink_kind, recipient)
+INSERT INTO powersinks(user_id, system_id, created, channel, recipient)
     VALUES($1, $2, $3, $4, $5);
 
--- name: QueryPowersinkForSystem :many
-SELECT powersink_id, powersink_kind, recipient FROM powersinks
+-- name: QueryPowersinksForSystem :many
+SELECT powersink_id, channel, recipient FROM powersinks
     WHERE user_id=$1 AND system_id=$2;
 
 -- name: QueryPowersinksAll :many
-SELECT powersink_id, powersink_kind, recipient FROM powersinks;
+SELECT powersink_id, channel, recipient FROM powersinks;
 
 -- name: QuerySessionsByUser :many
 SELECT session_token FROM auth_sessions WHERE user_id=$1;

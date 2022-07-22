@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS enphase_systems (
     system_id BIGINT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     public_name TEXT NOT NULL DEFAULT '',
+    timezone TEXT NOT NULL,
     PRIMARY KEY (user_id, system_id)
 );
 
@@ -46,18 +47,21 @@ CREATE TABLE IF NOT EXISTS powersinks (
     user_id TEXT NOT NULL,
     system_id BIGINT NOT NULL,
     created DATE NOT NULL,
-    powersink_kind string NOT NULL,
-    recipient string,
+    channel TEXT NOT NULL,
+    recipient TEXT,
     FOREIGN KEY(user_id, system_id) REFERENCES enphase_systems(user_id, system_id)
 );
 
-CREATE TABLE IF NOT EXISTS message_log (
+CREATE TABLE IF NOT EXISTS actions_log (
     powersink_id INTEGER NOT NULL,
     timestamp DATE NOT NULL,
-    state_change string NOT NULL,
-    success bool NOT NULL,
-    error_message string,
+    desired_action TEXT NOT NULL,
+    desired_reason TEXT,
+    executed_action TEXT NOT NULL,
+    executed_reason TEXT,
+    success BOOL NOT NULL,
+    success_reason TEXT,
     FOREIGN KEY(powersink_id) REFERENCES powersinks(powersink_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_message_log ON message_log(powersink_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_actions_log ON actions_log(powersink_id, timestamp);
